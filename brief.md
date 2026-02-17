@@ -34,6 +34,7 @@ Out of scope:
 * arrays/strings/containers
 * pointers/references
 * bitfields
+* anonymous unions (`union { ... } field;`)
 * inheritance/templates/method bodies in generated structs
 
 ## 4) Parsing model
@@ -145,7 +146,7 @@ Add tests for:
 
 * field read/write and proxy conversions
 * nested struct behavior
-* union variant-like operations (`index`, `holds_alternative`, `get`, `get_if`, `visit`, `emplace`)
+* union variant-like operations (`index`, `holds_alternative`, `get_if`, `visit`, `emplace`) and explicit no-`get<Alt>()` behavior
 * serialization roundtrip
 * generator smoke test (input -> generated -> compile)
 
@@ -238,3 +239,54 @@ For identical logical values, produced buffer bytes must be identical across pla
     * `tl::expected` for monadic error handling
     * `sfl` for segmented_vector
     * `bitsery` for bitsery support
+
+## 14) Minimal usage example
+
+### 14.1 Source file (`example.h.noserde`)
+
+```cpp
+#pragma once
+#include <cstdint>
+
+enum class Kind : std::uint8_t { Int = 0, Real = 1 };
+
+[[noserde]] struct Example {
+  bool flag;
+  std::int32_t id;
+
+  union Value {
+    std::int32_t as_int;
+    double as_real;
+  } value;
+
+  Kind kind;
+};
+```
+
+### 14.2 Generated-file usage (`main.cpp`)
+
+```cpp
+#include "example.h" // generated from example.h.noserde
+#include <cassert>
+
+int main() {
+  noserde::Buffer<Example> buf;
+  auto r = buf.emplace_back();
+
+  // property-style field access
+  r.flag = true;
+  r.id = 42;
+  r.kind = Kind::Int;
+
+  // std::variant-like union API
+  r.value.emplace<std::int32_t>(7);
+  assert(r.value.holds_alternative<std::int32_t>());
+  assert(r.value.index() == 0);
+  auto* as_int = r.value.get_if<std::int32_t>();
+  assert(as_int != nullptr && *as_int == 7);
+
+  // canonical LE invariant: bytes are always little-endian in buffer
+  auto raw = buf.bytes();
+  (void)raw;
+}
+```
