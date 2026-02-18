@@ -25,11 +25,31 @@
 
 namespace noserde {
 
+// Schema-only placeholder types. Generated code does not use these directly,
+// but keeping them complete improves editor parsing of source schema headers.
 template <typename... TAlternatives>
-struct variant;
+struct variant {
+  std::variant<std::monostate, TAlternatives...> storage{};
+
+  variant() = default;
+
+  template <typename T,
+            typename Decayed = std::decay_t<T>,
+            typename = std::enable_if_t<(std::is_same_v<Decayed, TAlternatives> || ...)>>
+  variant(T&& value) : storage(std::in_place_type<Decayed>, std::forward<T>(value)) {}
+};
 
 template <typename... TAlternatives>
-struct union_;
+struct union_ {
+  std::variant<std::monostate, TAlternatives...> storage{};
+
+  union_() = default;
+
+  template <typename T,
+            typename Decayed = std::decay_t<T>,
+            typename = std::enable_if_t<(std::is_same_v<Decayed, TAlternatives> || ...)>>
+  union_(T&& value) : storage(std::in_place_type<Decayed>, std::forward<T>(value)) {}
+};
 
 enum class io_error {
   open_failed,
@@ -424,7 +444,12 @@ class Buffer {
     for (std::size_t i = old_size; i < old_size + stride; ++i) {
       bytes_[i] = 0U;
     }
-    return record_traits<T>::make_ref(byte_ptr(old_size));
+    ref out = record_traits<T>::make_ref(byte_ptr(old_size));
+    if constexpr (has_record_data_traits_v<T>) {
+      typename record_data_traits<T>::data_type defaults{};
+      record_data_traits<T>::assign(out, defaults);
+    }
+    return out;
   }
 
   template <typename... Args>

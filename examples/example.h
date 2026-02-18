@@ -8,7 +8,7 @@ enum class Kind : std::uint8_t {
   Real = 1,
 };
 
-[[noserde]] struct Example {
+struct [[noserde]] Example {
   bool flag;
   std::int32_t id;
   noserde::variant<std::int32_t, double> value;

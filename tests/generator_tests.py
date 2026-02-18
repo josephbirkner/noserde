@@ -47,7 +47,7 @@ class GeneratorBehaviorTests(unittest.TestCase):
               int k;
             };
 
-            [[noserde]] struct Demo {
+            struct [[noserde]] Demo {
               std::uint32_t id;
             };
             """
@@ -74,7 +74,7 @@ class GeneratorBehaviorTests(unittest.TestCase):
         source = textwrap.dedent(
             """
             #pragma once
-            [[noserde]] struct A {
+            struct [[noserde]] A {
               std::uint8_t x;
             };
             """
@@ -102,7 +102,7 @@ class GeneratorBehaviorTests(unittest.TestCase):
         source = textwrap.dedent(
             """
             #pragma once
-            [[noserde]] struct Bad {
+            struct [[noserde]] Bad {
               int* ptr;
             };
             """
@@ -119,16 +119,74 @@ class GeneratorBehaviorTests(unittest.TestCase):
             self.assertIn("pointers/references are not supported", result.stderr)
             self.assertRegex(result.stderr, r"bad\.h:\d+:\d+: error:")
 
+    def test_attribute_before_struct_rejected(self) -> None:
+        source = textwrap.dedent(
+            """
+            #pragma once
+            [[noserde]] struct OldStyle {
+              std::uint32_t value;
+            };
+            """
+        ).strip() + "\n"
+
+        with tempfile.TemporaryDirectory() as td:
+            tmp = pathlib.Path(td)
+            in_path = tmp / "old_style.h"
+            out_path = tmp / "old_style.gen.h"
+            in_path.write_text(source, encoding="utf-8")
+
+            result = self.run_gen(in_path, out_path)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("noserde attribute must follow 'struct'", result.stderr)
+            self.assertRegex(result.stderr, r"old_style\.h:\d+:\d+: error:")
+
+    def test_default_initializers_codegen(self) -> None:
+        source = textwrap.dedent(
+            """
+            #pragma once
+            #include <cstdint>
+            #include <noserde.hpp>
+            struct [[noserde]] Vec2 {
+              std::int32_t x;
+              std::int32_t y;
+            };
+
+            struct [[noserde]] Defaults {
+              bool flag = true;
+              std::int32_t count = 7;
+              Vec2 point = Vec2(1, -2);
+              noserde::variant<std::int32_t, Vec2> tagged = Vec2(3, 4);
+              noserde::union_<std::uint32_t, Vec2> raw = Vec2(5, 6);
+            };
+            """
+        ).strip() + "\n"
+
+        with tempfile.TemporaryDirectory() as td:
+            tmp = pathlib.Path(td)
+            in_path = tmp / "defaults.h"
+            out_path = tmp / "defaults.gen.h"
+            in_path.write_text(source, encoding="utf-8")
+
+            result = self.run_gen(in_path, out_path)
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+
+            generated = out_path.read_text(encoding="utf-8")
+            self.assertIn("bool flag = true;", generated)
+            self.assertIn("std::int32_t count = 7;", generated)
+            self.assertIn("Vec2::Data point = Vec2::Data{1, -2};", generated)
+            self.assertIn("tagged_data tagged = Vec2::Data{3, 4};", generated)
+            self.assertIn("raw_data raw = Vec2::Data{5, 6};", generated)
+
     def test_variant_record_alternative_codegen(self) -> None:
         source = textwrap.dedent(
             """
             #pragma once
             #include <cstdint>
-            [[noserde]] struct Inner {
+            struct [[noserde]] Inner {
               std::uint16_t x;
             };
 
-            [[noserde]] struct Outer {
+            struct [[noserde]] Outer {
               noserde::variant<Inner, std::uint32_t> v;
             };
             """
@@ -157,11 +215,11 @@ class GeneratorBehaviorTests(unittest.TestCase):
             """
             #pragma once
             #include <cstdint>
-            [[noserde]] struct Inner {
+            struct [[noserde]] Inner {
               std::uint16_t x;
             };
 
-            [[noserde]] struct Outer {
+            struct [[noserde]] Outer {
               noserde::union_<Inner, std::uint32_t> v;
             };
             """
@@ -186,7 +244,7 @@ class GeneratorBehaviorTests(unittest.TestCase):
         source = textwrap.dedent(
             """
             #pragma once
-            [[noserde]] struct Inline {
+            struct [[noserde]] Inline {
               struct Meta { std::int16_t x; bool y; } meta;
               noserde::variant<std::uint32_t, double> payload;
             };
@@ -214,7 +272,7 @@ class GeneratorBehaviorTests(unittest.TestCase):
         source = textwrap.dedent(
             """
             #pragma once
-            [[noserde]] struct Inline {
+            struct [[noserde]] Inline {
               union Legacy {
                 std::int16_t x;
                 bool y;
@@ -237,7 +295,7 @@ class GeneratorBehaviorTests(unittest.TestCase):
         source = textwrap.dedent(
             """
             #pragma once
-            [[noserde]] struct Inline {
+            struct [[noserde]] Inline {
               noserde::variant<struct Words { std::uint32_t hi; std::uint32_t lo; }, double> payload;
             };
             """
@@ -257,7 +315,7 @@ class GeneratorBehaviorTests(unittest.TestCase):
         source = textwrap.dedent(
             """
             #pragma once
-            [[noserde]] struct Inline {
+            struct [[noserde]] Inline {
               struct { std::int16_t x; bool y; } meta;
             };
             """

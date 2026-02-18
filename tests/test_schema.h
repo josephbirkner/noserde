@@ -8,12 +8,12 @@ enum class Kind : std::uint8_t {
   Real = 1,
 };
 
-[[noserde]] struct Inner {
+struct [[noserde]] Inner {
   std::int16_t score;
   bool enabled;
 };
 
-[[noserde]] struct Example {
+struct [[noserde]] Example {
   bool flag;
   std::int32_t id;
   Inner inner;

@@ -73,6 +73,21 @@ function(noserde_register_schema_files out_codegen_targets_var)
 
     noserde_generated_output_for_schema("${schema_abs}" generated_file)
     set_source_files_properties("${generated_file}" PROPERTIES GENERATED TRUE)
+    get_filename_component(_generated_dir "${generated_file}" DIRECTORY)
+    file(MAKE_DIRECTORY "${_generated_dir}")
+
+    execute_process(
+      COMMAND "${Python3_EXECUTABLE}" "${NOSERDE_GENERATOR}" --in "${schema_abs}" --out "${generated_file}"
+      WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+      RESULT_VARIABLE _bootstrap_result
+      OUTPUT_VARIABLE _bootstrap_stdout
+      ERROR_VARIABLE _bootstrap_stderr
+    )
+    if(NOT _bootstrap_result EQUAL 0)
+      message(FATAL_ERROR
+        "noserde configure-time generation failed for ${schema_abs}\n${_bootstrap_stderr}"
+      )
+    endif()
 
     string(SHA1 _schema_hash "${schema_abs}")
     string(SUBSTRING "${_schema_hash}" 0 16 _schema_hash_short)
@@ -262,6 +277,13 @@ if(BUILD_TESTING)
   )
   target_link_libraries(noserde_runtime_inline_struct_tests PRIVATE noserde_runtime)
   add_test(NAME noserde_runtime_inline_struct_tests COMMAND noserde_runtime_inline_struct_tests)
+
+  add_executable(noserde_runtime_defaults_tests
+    tests/runtime_defaults_tests.cpp
+    tests/defaults_schema.h
+  )
+  target_link_libraries(noserde_runtime_defaults_tests PRIVATE noserde_runtime)
+  add_test(NAME noserde_runtime_defaults_tests COMMAND noserde_runtime_defaults_tests)
 
   add_executable(noserde_runtime_io_error_tests
     tests/runtime_io_error_tests.cpp

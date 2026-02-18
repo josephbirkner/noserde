@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """noserde tagged-struct generator.
 
-Input:  C++ source containing [[noserde]] struct blocks.
+Input:  C++ source containing struct [[noserde]] blocks.
 Output: transformed C++ source with generated wrappers replacing tagged blocks.
 """
 
@@ -15,7 +15,7 @@ import re
 import sys
 from typing import Iterable, List, Sequence, Tuple
 
-GENERATOR_VERSION = "0.1.9"
+GENERATOR_VERSION = "0.1.10"
 FORMAT_VERSION = "1"
 ATTRIBUTE_TOKEN = "[[noserde]]"
 DIGEST_PATTERN = re.compile(r"^// digest: ([0-9a-f]{64})$", re.MULTILINE)
@@ -40,6 +40,7 @@ class Field:
     type_name: str = ""
     union_alts: List[UnionAlt] = dataclasses.field(default_factory=list)
     inline_record: "InlineRecord | None" = None
+    default_init: str | None = None
 
 
 @dataclasses.dataclass
@@ -134,6 +135,79 @@ def find_attribute_positions(text: str) -> List[int]:
                 positions.append(i)
                 i += len(ATTRIBUTE_TOKEN)
                 continue
+            i += 1
+            continue
+
+        if mode == "line":
+            if text[i] == "\n":
+                mode = "code"
+            i += 1
+            continue
+
+        if mode == "block":
+            if text.startswith("*/", i):
+                mode = "code"
+                i += 2
+            else:
+                i += 1
+            continue
+
+        if mode in ("dquote", "squote"):
+            quote = '"' if mode == "dquote" else "'"
+            ch = text[i]
+            if escape:
+                escape = False
+                i += 1
+                continue
+            if ch == "\\":
+                escape = True
+                i += 1
+                continue
+            if ch == quote:
+                mode = "code"
+            i += 1
+            continue
+
+    return positions
+
+
+def find_struct_keyword_positions(text: str) -> List[int]:
+    positions: List[int] = []
+    i = 0
+    n = len(text)
+    mode = "code"
+    escape = False
+
+    while i < n:
+        if mode == "code":
+            if text.startswith("//", i):
+                mode = "line"
+                i += 2
+                continue
+            if text.startswith("/*", i):
+                mode = "block"
+                i += 2
+                continue
+            if text[i] == '"':
+                mode = "dquote"
+                escape = False
+                i += 1
+                continue
+            if text[i] == "'":
+                mode = "squote"
+                escape = False
+                i += 1
+                continue
+
+            if text.startswith("struct", i):
+                before_ok = i == 0 or not (text[i - 1].isalnum() or text[i - 1] == "_")
+                end_kw = i + len("struct")
+                after_ok = end_kw >= n or not (text[end_kw].isalnum() or text[end_kw] == "_")
+                if before_ok and after_ok:
+                    positions.append(i)
+                    i = end_kw
+                    continue
+
             i += 1
             continue
 
@@ -327,9 +401,113 @@ def normalize_type(type_name: str) -> str:
     return " ".join(type_name.strip().split())
 
 
+def split_decl_initializer(decl: str, origin_index: int) -> Tuple[str, str | None]:
+    i = 0
+    n = len(decl)
+    angle_depth = 0
+    paren_depth = 0
+    brace_depth = 0
+    bracket_depth = 0
+    mode = "code"
+    escape = False
+
+    while i < n:
+        if mode == "code":
+            if decl.startswith("//", i):
+                mode = "line"
+                i += 2
+                continue
+            if decl.startswith("/*", i):
+                mode = "block"
+                i += 2
+                continue
+
+            ch = decl[i]
+            if ch == '"':
+                mode = "dquote"
+                escape = False
+                i += 1
+                continue
+            if ch == "'":
+                mode = "squote"
+                escape = False
+                i += 1
+                continue
+
+            if ch == "<":
+                angle_depth += 1
+            elif ch == ">":
+                angle_depth -= 1
+            elif ch == "(":
+                paren_depth += 1
+            elif ch == ")":
+                paren_depth -= 1
+            elif ch == "{":
+                brace_depth += 1
+            elif ch == "}":
+                brace_depth -= 1
+            elif ch == "[":
+                bracket_depth += 1
+            elif ch == "]":
+                bracket_depth -= 1
+            elif (
+                ch == "="
+                and angle_depth == 0
+                and paren_depth == 0
+                and brace_depth == 0
+                and bracket_depth == 0
+            ):
+                if i + 1 < n and decl[i + 1] == "=":
+                    i += 1
+                    continue
+                if i > 0 and decl[i - 1] in ("!", "<", ">"):
+                    i += 1
+                    continue
+
+                lhs = decl[:i].strip()
+                rhs = decl[i + 1 :].strip()
+                if not lhs:
+                    raise ParseError("expected declaration before '='", origin_index + i)
+                if not rhs:
+                    raise ParseError("expected initializer expression after '='", origin_index + i + 1)
+                return lhs, rhs
+            i += 1
+            continue
+
+        if mode == "line":
+            if decl[i] == "\n":
+                mode = "code"
+            i += 1
+            continue
+
+        if mode == "block":
+            if decl.startswith("*/", i):
+                mode = "code"
+                i += 2
+            else:
+                i += 1
+            continue
+
+        if mode in ("dquote", "squote"):
+            quote = '"' if mode == "dquote" else "'"
+            ch = decl[i]
+            if escape:
+                escape = False
+                i += 1
+                continue
+            if ch == "\\":
+                escape = True
+                i += 1
+                continue
+            if ch == quote:
+                mode = "code"
+            i += 1
+            continue
+
+    return decl.strip(), None
+
+
 def parse_type_name_pair(decl: str, origin_index: int = 0) -> Tuple[str, str]:
-    if "=" in decl:
-        raise ParseError("default field initializers are not supported", origin_index + decl.index("="))
 
     match = re.match(r"^(?P<type>.+?)\s+(?P<name>[A-Za-z_]\w*)$", decl.strip(), re.DOTALL)
     if not match:
@@ -482,6 +660,187 @@ def split_top_level_template_args(text: str, origin_index: int) -> List[str]:
     return args
 
 
+def find_matching_delim(text: str, open_index: int, origin_index: int) -> int:
+    if open_index >= len(text) or text[open_index] not in ("(", "{"):
+        raise ParseError("internal error: expected '(' or '{'", origin_index + open_index)
+    opener = text[open_index]
+    closer = ")" if opener == "(" else "}"
+
+    i = open_index
+    n = len(text)
+    depth = 0
+    mode = "code"
+    escape = False
+
+    while i < n:
+        if mode == "code":
+            if text.startswith("//", i):
+                mode = "line"
+                i += 2
+                continue
+            if text.startswith("/*", i):
+                mode = "block"
+                i += 2
+                continue
+            if text[i] == '"':
+                mode = "dquote"
+                escape = False
+                i += 1
+                continue
+            if text[i] == "'":
+                mode = "squote"
+                escape = False
+                i += 1
+                continue
+            if text[i] == opener:
+                depth += 1
+            elif text[i] == closer:
+                depth -= 1
+                if depth == 0:
+                    return i
+            i += 1
+            continue
+
+        if mode == "line":
+            if text[i] == "\n":
+                mode = "code"
+            i += 1
+            continue
+
+        if mode == "block":
+            if text.startswith("*/", i):
+                mode = "code"
+                i += 2
+            else:
+                i += 1
+            continue
+
+        if mode in ("dquote", "squote"):
+            quote = '"' if mode == "dquote" else "'"
+            ch = text[i]
+            if escape:
+                escape = False
+                i += 1
+                continue
+            if ch == "\\":
+                escape = True
+                i += 1
+                continue
+            if ch == quote:
+                mode = "code"
+            i += 1
+            continue
+
+    raise ParseError("unbalanced initializer expression", origin_index + open_index)
+
+
+def parse_ctor_like_expression(expr: str, origin_index: int) -> Tuple[str, str] | None:
+    text = expr.strip()
+    if not text:
+        return None
+
+    i = 0
+    n = len(text)
+    angle_depth = 0
+    mode = "code"
+    escape = False
+
+    while i < n:
+        if mode == "code":
+            if text.startswith("//", i):
+                mode = "line"
+                i += 2
+                continue
+            if text.startswith("/*", i):
+                mode = "block"
+                i += 2
+                continue
+            ch = text[i]
+            if ch == '"':
+                mode = "dquote"
+                escape = False
+                i += 1
+                continue
+            if ch == "'":
+                mode = "squote"
+                escape = False
+                i += 1
+                continue
+            if ch == "<":
+                angle_depth += 1
+            elif ch == ">":
+                angle_depth -= 1
+            elif ch in ("(", "{") and angle_depth == 0:
+                type_part = normalize_type(text[:i])
+                if not type_part:
+                    return None
+                close_index = find_matching_delim(text, i, origin_index)
+                if text[close_index + 1 :].strip():
+                    return None
+                return type_part, text[i + 1 : close_index]
+            i += 1
+            continue
+
+        if mode == "line":
+            if text[i] == "\n":
+                mode = "code"
+            i += 1
+            continue
+
+        if mode == "block":
+            if text.startswith("*/", i):
+                mode = "code"
+                i += 2
+            else:
+                i += 1
+            continue
+
+        if mode in ("dquote", "squote"):
+            quote = '"' if mode == "dquote" else "'"
+            ch = text[i]
+            if escape:
+                escape = False
+                i += 1
+                continue
+            if ch == "\\":
+                escape = True
+                i += 1
+                continue
+            if ch == quote:
+                mode = "code"
+            i += 1
+            continue
+
+    return None
+
+
+def normalize_default_expr_for_record(field_type: str, default_expr: str, origin_index: int) -> str:
+    ctor_expr = parse_ctor_like_expression(default_expr, origin_index)
+    if ctor_expr is None:
+        return default_expr.strip()
+
+    ctor_type, ctor_args = ctor_expr
+    if ctor_type not in (field_type, f"{field_type}::Data"):
+        return default_expr.strip()
+
+    return f"{field_type}::Data{{{ctor_args}}}"
+
+
+def normalize_default_expr_for_sum(field: Field, default_expr: str, origin_index: int) -> str:
+    ctor_expr = parse_ctor_like_expression(default_expr, origin_index)
+    if ctor_expr is None:
+        return default_expr.strip()
+
+    ctor_type, ctor_args = ctor_expr
+
+    for alt in field.union_alts:
+        data_type = f"{alt.type_name}::Data" if alt.is_record else alt.type_name
+        if ctor_type == alt.type_name or ctor_type == data_type:
+            return f"{data_type}{{{ctor_args}}}"
+
+    return default_expr.strip()
+
+
 def parse_noserde_sum_type(type_name: str, field_name: str, origin_index: int) -> Field | None:
     normalized = normalize_type(type_name)
     for field_kind, prefix in (("variant", "noserde::variant<"), ("union_", "noserde::union_<")):
@@ -532,15 +891,19 @@ def parse_struct_fields(body: str, body_origin_index: int) -> List[Field]:
                 decl_origin,
             )
 
-        type_name, field_name = parse_type_name_pair(stripped, decl_origin)
+        decl_lhs, default_expr = split_decl_initializer(stripped, decl_origin)
+        type_name, field_name = parse_type_name_pair(decl_lhs, decl_origin)
         sum_field = parse_noserde_sum_type(type_name, field_name, decl_origin)
         if sum_field is not None:
+            sum_field.default_init = default_expr
             fields.append(sum_field)
             continue
 
         inline_struct = parse_inline_struct(type_name, decl_origin)
         if inline_struct is None:
-            fields.append(Field(kind="scalar", name=field_name, type_name=type_name))
+            fields.append(
+                Field(kind="scalar", name=field_name, type_name=type_name, default_init=default_expr)
+            )
         else:
             inline_name, inline_body = inline_struct
             inline_fields = parse_struct_fields(inline_body, decl_origin)
@@ -550,23 +913,21 @@ def parse_struct_fields(body: str, body_origin_index: int) -> List[Field]:
                     name=field_name,
                     type_name="",
                     inline_record=InlineRecord(name=inline_name, fields=inline_fields),
+                    default_init=default_expr,
                 )
             )
 
     return fields
 
 
-def parse_tagged_struct(text: str, attr_index: int) -> StructBlock:
-    i = attr_index + len(ATTRIBUTE_TOKEN)
-    i = skip_ws_comments(text, i)
-
-    if not text.startswith("struct", i):
-        raise ParseError("expected 'struct' after [[noserde]]", i)
-    end_struct_kw = i + len("struct")
-    if end_struct_kw < len(text) and (text[end_struct_kw].isalnum() or text[end_struct_kw] == "_"):
-        raise ParseError("expected 'struct' keyword", i)
-
+def parse_tagged_struct(text: str, struct_index: int) -> Tuple[StructBlock, int] | None:
+    end_struct_kw = struct_index + len("struct")
     i = skip_ws_comments(text, end_struct_kw)
+    if not text.startswith(ATTRIBUTE_TOKEN, i):
+        return None
+    attr_index = i
+    i += len(ATTRIBUTE_TOKEN)
+    i = skip_ws_comments(text, i)
     struct_name, i = parse_identifier(text, i)
 
     i = skip_ws_comments(text, i)
@@ -582,20 +943,33 @@ def parse_tagged_struct(text: str, attr_index: int) -> StructBlock:
         raise ParseError("expected ';' after struct declaration", i)
 
     end = i + 1
-    return StructBlock(name=struct_name, body=body, start=attr_index, end=end)
+    return StructBlock(name=struct_name, body=body, start=struct_index, end=end), attr_index
 
 
 def parse_all_structs(text: str) -> List[StructBlock]:
-    positions = find_attribute_positions(text)
+    struct_positions = find_struct_keyword_positions(text)
+    attribute_positions = find_attribute_positions(text)
     blocks: List[StructBlock] = []
+    consumed_attributes: set[int] = set()
     consumed_until = -1
 
-    for pos in positions:
+    for pos in struct_positions:
         if pos < consumed_until:
             continue
-        block = parse_tagged_struct(text, pos)
+        parsed = parse_tagged_struct(text, pos)
+        if parsed is None:
+            continue
+        block, attr_index = parsed
+        consumed_attributes.add(attr_index)
         blocks.append(block)
         consumed_until = block.end
+
+    for attr_index in attribute_positions:
+        if attr_index not in consumed_attributes:
+            raise ParseError(
+                "noserde attribute must follow 'struct': use 'struct [[noserde]] Name { ... };'",
+                attr_index,
+            )
 
     return blocks
 
@@ -682,6 +1056,17 @@ def data_type_expr_for_field(field: Field) -> str:
         alt_types = ", ".join(data_type_expr_for_alt(alt) for alt in field.union_alts)
         return f"std::variant<{alt_types}>"
     return field.type_name
+
+
+def data_field_initializer_expr(field: Field, origin_index: int) -> str | None:
+    if field.default_init is None:
+        return None
+
+    if field.kind == "record":
+        return normalize_default_expr_for_record(field.type_name, field.default_init, origin_index)
+    if field.kind in ("variant", "union_"):
+        return normalize_default_expr_for_sum(field, field.default_init, origin_index)
+    return field.default_init.strip()
 
 
 def schema_hash64(block: StructBlock) -> int:
@@ -1013,7 +1398,11 @@ def render_struct(block: StructBlock) -> str:
     lines.append("  struct Data {")
     for field in block.fields:
         field_data_type = f"{field.name}_data" if field.kind in ("variant", "union_") else data_type_expr_for_field(field)
-        lines.append(f"    {field_data_type} {field.name}{{}};")
+        default_expr = data_field_initializer_expr(field, block.start)
+        if default_expr is None:
+            lines.append(f"    {field_data_type} {field.name}{{}};")
+        else:
+            lines.append(f"    {field_data_type} {field.name} = {default_expr};")
     lines.append("  };")
     lines.append("")
 

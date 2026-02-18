@@ -11,7 +11,7 @@
 
 ## Supported Schema Subset
 
-Inside `[[noserde]] struct ...` blocks:
+Inside `struct [[noserde]] ...` blocks:
 
 - `bool` (stored as `u8`)
 - fixed-width signed/unsigned integers
@@ -21,6 +21,7 @@ Inside `[[noserde]] struct ...` blocks:
 - `noserde::variant<T...>` (tagged/discriminated)
 - `noserde::union_<T...>` (untagged overlay)
 - named nested structs (`struct Name { ... } field;`)
+- field default initializers (`field = expr`)
 
 Out of scope:
 
@@ -32,9 +33,9 @@ Out of scope:
 
 ## Workflow
 
-1. Author a source header (for example `my_schema.h`) with `[[noserde]]` structs.
+1. Author a source header (for example `my_schema.h`) with `struct [[noserde]]` declarations.
    If you use `noserde::variant<T...>` / `noserde::union_<T...>` field types, include `<noserde.hpp>` in that schema header.
-2. Tag target structs with `[[noserde]]`.
+2. Tag target structs as `struct [[noserde]] Name { ... };`.
 3. Add that header to a target's source list and link that target with `noserde_runtime` (or `noserde::runtime`).
 4. Build the target. The generator creates mirrored headers under `build/noserde_generated/`.
 5. Include the same header path you authored (for example `#include "my_schema.h"`). Generated headers shadow source headers automatically.
@@ -98,6 +99,21 @@ using FlatBuffer = noserde::Buffer<MyRecord, 256, noserde::vector_byte_storage>;
 
 `u.get<T>()` is intentionally not generated.
 
+## Default Initializers
+
+Schema fields may use `= ...` defaults.
+
+```cpp
+struct [[noserde]] Demo {
+  std::int32_t id = 7;
+  noserde::variant<std::int32_t, MyRec> tagged = MyRec(1, 2);
+  noserde::union_<float, MyRec> raw = MyRec(3, 4);
+};
+```
+
+Defaults are applied when creating records with `Buffer::emplace_back()` and `Buffer::emplace()`.
+For record alternatives in `variant/union_`, `T(...)` and `T{...}` defaults are mapped to `T::Data{...}` in generated code.
+
 ## Flashy Usage Examples
 
 ### 1) Define a schema with explicit `variant` + `union_` fields
@@ -113,17 +129,17 @@ enum class Channel : std::uint8_t {
   Pressure = 1,
 };
 
-[[noserde]] struct TelemetryHeader {
+struct [[noserde]] TelemetryHeader {
   std::uint16_t device_id;
   bool critical;
 };
 
-[[noserde]] struct TelemetryPacked {
+struct [[noserde]] TelemetryPacked {
   std::uint32_t hi;
   std::uint32_t lo;
 };
 
-[[noserde]] struct TelemetryFrame {
+struct [[noserde]] TelemetryFrame {
   std::uint64_t ts_ns;
   TelemetryHeader header;
   noserde::variant<std::int32_t, float, TelemetryPacked> payload;

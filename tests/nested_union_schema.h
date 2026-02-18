@@ -11,19 +11,19 @@ enum class Mode : std::uint8_t {
   I32 = 4,
 };
 
-[[noserde]] struct Pair {
+struct [[noserde]] Pair {
   std::int16_t x;
   std::int16_t y;
 };
 
-[[noserde]] struct Node {
+struct [[noserde]] Node {
   bool valid;
   noserde::variant<Pair, std::uint64_t, float> payload;
 
   Mode mode;
 };
 
-[[noserde]] struct Envelope {
+struct [[noserde]] Envelope {
   Node node;
   noserde::variant<Pair, Node, std::int32_t> choice;
 

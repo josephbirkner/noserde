@@ -3,12 +3,12 @@
 #include <cstdint>
 #include <noserde.hpp>
 
-[[noserde]] struct InlineWords {
+struct [[noserde]] InlineWords {
   std::uint32_t hi;
   std::uint32_t lo;
 };
 
-[[noserde]] struct InlineDemo {
+struct [[noserde]] InlineDemo {
   struct Meta {
     std::int16_t x;
     bool enabled;
