@@ -198,10 +198,14 @@ using Flat = noserde::Buffer<Example, 256, noserde::vector_byte_storage>;
 Native POD fast path (little-endian only):
 
 ```cpp
+#include <cstdint>
 #include <glm/glm.hpp>
 
 noserde::Buffer<glm::fvec3> points;
 points.emplace(1.0f, 2.0f, 3.0f); // direct glm::fvec3&, no Ref wrapper construction
+
+noserde::Buffer<std::int64_t> ids;
+ids.emplace(42); // arithmetic POD mode is enabled too
 ```
 
 ## Binary Format
@@ -249,14 +253,12 @@ const auto [error, completed] = bitsery::quickDeserialization(
 
 ## Endianness
 
-Buffer bytes are always canonical little-endian.
+Buffer bytes are canonical little-endian, and noserde is little-endian only.
 
-- little-endian hosts: no conversion overhead in the hot path
-- big-endian hosts: conversion at load/store boundaries
+- little-endian hosts: zero conversion overhead in the hot path
+- big-endian hosts: not supported
 
-This applies to ints, floats, enums, and variant tag values.
-
-For gated native POD types (including `Buffer<glm::fvec3>`), noserde enables a memcpy-based fast path on little-endian targets only (including WebAssembly targets like `wasm32`).
+For gated native POD types (including arithmetic POD mode and `Buffer<glm::fvec3>`), noserde provides a memcpy-free `load_le_ref<T>()` API on little-endian targets (including WebAssembly targets like `wasm32`).
 
 ## Build And Test (This Repo)
 

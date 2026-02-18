@@ -1,4 +1,4 @@
-set(NOSERDE_CPM_FILE "${CMAKE_SOURCE_DIR}/cmake/CPM.cmake")
+set(NOSERDE_CPM_FILE "${CMAKE_CURRENT_LIST_DIR}/CPM.cmake")
 if(NOT EXISTS "${NOSERDE_CPM_FILE}")
   message(FATAL_ERROR
     "Missing cmake/CPM.cmake. Initialize submodules before configuring: \n"

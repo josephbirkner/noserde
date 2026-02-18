@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
@@ -11,6 +12,7 @@
 #include <fstream>
 #include <limits>
 #include <span>
+#include <stdexcept>
 #include <string_view>
 #include <type_traits>
 #include <utility>
@@ -24,6 +26,9 @@
 #include <tl/expected.hpp>
 
 namespace noserde {
+
+static_assert(std::endian::native == std::endian::little,
+              "noserde currently supports little-endian hosts only");
 
 // Schema-only placeholder types. Generated code does not use these directly,
 // but keeping them complete improves editor parsing of source schema headers.
@@ -90,61 +95,36 @@ inline constexpr bool always_false_v = always_false<T>::value;
 namespace detail {
 
 template <typename UInt>
-constexpr UInt byteswap_unsigned(UInt value) {
-  static_assert(std::is_unsigned_v<UInt>, "byteswap_unsigned expects unsigned type");
-  if constexpr (sizeof(UInt) == 1) {
-    return value;
-  } else if constexpr (sizeof(UInt) == 2) {
-    return static_cast<UInt>(((value & static_cast<UInt>(0x00ffU)) << 8U) |
-                             ((value & static_cast<UInt>(0xff00U)) >> 8U));
-  } else if constexpr (sizeof(UInt) == 4) {
-    return static_cast<UInt>(((value & static_cast<UInt>(0x000000ffUL)) << 24U) |
-                             ((value & static_cast<UInt>(0x0000ff00UL)) << 8U) |
-                             ((value & static_cast<UInt>(0x00ff0000UL)) >> 8U) |
-                             ((value & static_cast<UInt>(0xff000000UL)) >> 24U));
-  } else if constexpr (sizeof(UInt) == 8) {
-    return static_cast<UInt>(
-        ((value & static_cast<UInt>(0x00000000000000ffULL)) << 56U) |
-        ((value & static_cast<UInt>(0x000000000000ff00ULL)) << 40U) |
-        ((value & static_cast<UInt>(0x0000000000ff0000ULL)) << 24U) |
-        ((value & static_cast<UInt>(0x00000000ff000000ULL)) << 8U) |
-        ((value & static_cast<UInt>(0x000000ff00000000ULL)) >> 8U) |
-        ((value & static_cast<UInt>(0x0000ff0000000000ULL)) >> 24U) |
-        ((value & static_cast<UInt>(0x00ff000000000000ULL)) >> 40U) |
-        ((value & static_cast<UInt>(0xff00000000000000ULL)) >> 56U));
-  } else {
-    static_assert(always_false_v<UInt>, "Unsupported integer width for byteswap");
-  }
-}
-
-template <typename UInt>
 constexpr UInt host_to_le(UInt value) {
   static_assert(std::is_unsigned_v<UInt>, "host_to_le expects unsigned type");
-  if constexpr (std::endian::native == std::endian::little) {
-    return value;
-  } else {
-    return byteswap_unsigned(value);
-  }
+  return value;
 }
 
 template <typename UInt>
 constexpr UInt le_to_host(UInt value) {
   static_assert(std::is_unsigned_v<UInt>, "le_to_host expects unsigned type");
-  if constexpr (std::endian::native == std::endian::little) {
-    return value;
-  } else {
-    return byteswap_unsigned(value);
-  }
+  return value;
 }
 
 template <typename T>
 inline constexpr bool is_native_pod_wire_candidate_v =
     std::is_trivially_copyable_v<std::remove_cv_t<T>> &&
     std::is_standard_layout_v<std::remove_cv_t<T>> &&
-    !std::is_same_v<std::remove_cv_t<T>, bool> &&
-    !std::is_enum_v<std::remove_cv_t<T>> &&
-    !std::is_integral_v<std::remove_cv_t<T>> &&
-    !std::is_floating_point_v<std::remove_cv_t<T>>;
+    !std::is_same_v<std::remove_cv_t<T>, bool>;
+
+template <typename T>
+inline constexpr bool is_direct_le_ref_type_v =
+    is_native_pod_wire_candidate_v<T> &&
+    !std::is_same_v<std::remove_cv_t<T>, bool>;
+
+inline bool is_aligned_ptr(const void* ptr, std::size_t alignment) {
+  return (reinterpret_cast<std::uintptr_t>(ptr) % alignment) == 0U;
+}
+
+template <typename T>
+inline bool is_aligned_for(const void* ptr) {
+  return is_aligned_ptr(ptr, alignof(std::remove_cv_t<T>));
+}
 
 constexpr std::uint64_t fnv1a64(std::string_view text) {
   std::uint64_t hash = 14695981039346656037ULL;
@@ -233,6 +213,24 @@ bool read_bitsery_size_prefix_1b(S& archive, std::size_t& out_size) {
 inline constexpr std::size_t k_bitsery_max_payload_bytes = 0x3FFFFFFFU;
 
 template <typename T>
+const std::remove_cv_t<T>& load_le_ref(const std::byte* ptr) {
+  using U = std::remove_cv_t<T>;
+  static_assert(detail::is_direct_le_ref_type_v<U>,
+                "load_le_ref requires a gated native POD type (excluding bool)");
+  assert(detail::is_aligned_for<U>(ptr) && "load_le_ref requires an aligned pointer");
+  return *reinterpret_cast<const U*>(ptr);
+}
+
+template <typename T>
+std::remove_cv_t<T>& load_le_ref(std::byte* ptr) {
+  using U = std::remove_cv_t<T>;
+  static_assert(detail::is_direct_le_ref_type_v<U>,
+                "load_le_ref requires a gated native POD type (excluding bool)");
+  assert(detail::is_aligned_for<U>(ptr) && "load_le_ref requires an aligned pointer");
+  return *reinterpret_cast<U*>(ptr);
+}
+
+template <typename T>
 T load_le(const std::byte* ptr) {
   static_assert(!std::is_reference_v<T>, "T must not be a reference");
 
@@ -254,8 +252,6 @@ T load_le(const std::byte* ptr) {
     const U bits = load_le<U>(ptr);
     return std::bit_cast<T>(bits);
   } else if constexpr (detail::is_native_pod_wire_candidate_v<T>) {
-    static_assert(std::endian::native == std::endian::little,
-                  "native POD wire types are currently supported only on little-endian targets");
     std::array<std::byte, sizeof(T)> raw{};
     std::memcpy(raw.data(), ptr, raw.size());
     return std::bit_cast<T>(raw);
@@ -266,7 +262,7 @@ T load_le(const std::byte* ptr) {
 }
 
 template <typename T>
-void store_le(std::byte* ptr, T value) {
+void store_le(std::byte* ptr, const T& value) {
   static_assert(!std::is_reference_v<T>, "T must not be a reference");
 
   if constexpr (std::is_same_v<T, bool>) {
@@ -285,8 +281,6 @@ void store_le(std::byte* ptr, T value) {
     const U bits = std::bit_cast<U>(value);
     store_le<U>(ptr, bits);
   } else if constexpr (detail::is_native_pod_wire_candidate_v<T>) {
-    static_assert(std::endian::native == std::endian::little,
-                  "native POD wire types are currently supported only on little-endian targets");
     const auto raw = std::bit_cast<std::array<std::byte, sizeof(T)>>(value);
     std::memcpy(ptr, raw.data(), raw.size());
   } else {
@@ -366,8 +360,6 @@ constexpr std::size_t schema_record_sizeof() {
   if constexpr (has_record_traits_v<U>) {
     return record_traits<U>::size_bytes;
   } else if constexpr (is_native_pod_wire_type_v<U>) {
-    static_assert(std::endian::native == std::endian::little,
-                  "native POD wire types are currently supported only on little-endian targets");
     return sizeof(U);
   } else {
     static_assert(always_false_v<U>,
@@ -381,8 +373,6 @@ constexpr std::uint64_t schema_hashof() {
   if constexpr (has_record_traits_v<U>) {
     return record_traits<U>::schema_hash;
   } else if constexpr (is_native_pod_wire_type_v<U>) {
-    static_assert(std::endian::native == std::endian::little,
-                  "native POD wire types are currently supported only on little-endian targets");
     return detail::native_type_schema_hash<U>();
   } else {
     static_assert(always_false_v<U>, "schema_hashof requires generated record_traits<T> or gated native POD type");
@@ -401,8 +391,6 @@ constexpr std::size_t wire_sizeof() {
   } else if constexpr (has_record_traits_v<U>) {
     return record_traits<U>::size_bytes;
   } else if constexpr (is_native_pod_wire_type_v<U>) {
-    static_assert(std::endian::native == std::endian::little,
-                  "native POD wire types are currently supported only on little-endian targets");
     return sizeof(U);
   } else {
     static_assert(always_false_v<U>, "Unsupported field type for noserde wire layout");
@@ -429,7 +417,13 @@ class scalar_ref {
 
   explicit scalar_ref(std::byte* ptr = nullptr) : ptr_(ptr) {}
 
-  scalar_ref& operator=(T value) {
+  scalar_ref& operator=(const T& value) {
+    if constexpr (detail::is_direct_le_ref_type_v<T>) {
+      if (detail::is_aligned_for<T>(ptr_)) {
+        load_le_ref<T>(ptr_) = value;
+        return *this;
+      }
+    }
     store_le<T>(ptr_, value);
     return *this;
   }
@@ -439,9 +433,26 @@ class scalar_ref {
     return *this;
   }
 
-  operator T() const { return load_le<T>(ptr_); }
+  operator T() const {
+    if constexpr (detail::is_direct_le_ref_type_v<T>) {
+      if (detail::is_aligned_for<T>(ptr_)) {
+        return load_le_ref<T>(ptr_);
+      }
+    }
+    return load_le<T>(ptr_);
+  }
 
   T value() const { return static_cast<T>(*this); }
+
+  template <typename U = T, typename = std::enable_if_t<detail::is_direct_le_ref_type_v<U>>>
+  U& ref() {
+    return load_le_ref<U>(ptr_);
+  }
+
+  template <typename U = T, typename = std::enable_if_t<detail::is_direct_le_ref_type_v<U>>>
+  const U& ref() const {
+    return load_le_ref<U>(ptr_);
+  }
 
   bool operator==(T rhs) const { return value() == rhs; }
   bool operator!=(T rhs) const { return value() != rhs; }
@@ -457,9 +468,21 @@ class scalar_cref {
 
   explicit scalar_cref(const std::byte* ptr = nullptr) : ptr_(ptr) {}
 
-  operator T() const { return load_le<T>(ptr_); }
+  operator T() const {
+    if constexpr (detail::is_direct_le_ref_type_v<T>) {
+      if (detail::is_aligned_for<T>(ptr_)) {
+        return load_le_ref<T>(ptr_);
+      }
+    }
+    return load_le<T>(ptr_);
+  }
 
   T value() const { return static_cast<T>(*this); }
+
+  template <typename U = T, typename = std::enable_if_t<detail::is_direct_le_ref_type_v<U>>>
+  const U& ref() const {
+    return load_le_ref<U>(ptr_);
+  }
 
   bool operator==(T rhs) const { return value() == rhs; }
   bool operator!=(T rhs) const { return value() != rhs; }
@@ -537,6 +560,18 @@ class Buffer<T, T_RecordsPerPage, T_ByteStoragePolicy, std::enable_if_t<has_reco
 
   void clear() { bytes_.clear(); }
 
+  void reserve(std::size_t count) {
+    if constexpr (requires(storage_type& storage, std::size_t n) { storage.reserve(n); }) {
+      bytes_.reserve(count * kRecordSize);
+    }
+  }
+
+  void shrink_to_fit() {
+    if constexpr (requires(storage_type& storage) { storage.shrink_to_fit(); }) {
+      bytes_.shrink_to_fit();
+    }
+  }
+
   ref emplace_back() {
     const std::size_t stride = record_traits<T>::size_bytes;
     const std::size_t old_size = bytes_.size();
@@ -570,6 +605,34 @@ class Buffer<T, T_RecordsPerPage, T_ByteStoragePolicy, std::enable_if_t<has_reco
   const_ref operator[](std::size_t index) const {
     const std::size_t stride = record_traits<T>::size_bytes;
     return record_traits<T>::make_const_ref(byte_ptr(index * stride));
+  }
+
+  ref at(std::size_t index) {
+    if (index >= size()) {
+      throw std::out_of_range("noserde::Buffer::at index out of range");
+    }
+    return (*this)[index];
+  }
+
+  const_ref at(std::size_t index) const {
+    if (index >= size()) {
+      throw std::out_of_range("noserde::Buffer::at index out of range");
+    }
+    return (*this)[index];
+  }
+
+  ref back() {
+    if (empty()) {
+      throw std::out_of_range("noserde::Buffer::back on empty buffer");
+    }
+    return (*this)[size() - 1];
+  }
+
+  const_ref back() const {
+    if (empty()) {
+      throw std::out_of_range("noserde::Buffer::back on empty buffer");
+    }
+    return (*this)[size() - 1];
   }
 
   [[nodiscard]] std::vector<std::byte> bytes() const {
@@ -658,8 +721,6 @@ template <typename T,
 class Buffer<T, T_RecordsPerPage, T_ByteStoragePolicy, std::enable_if_t<!has_record_traits_v<T>>> {
   static_assert(is_native_pod_wire_type_v<T>,
                 "Buffer<T> requires generated noserde::record_traits<T> or a gated native POD type");
-  static_assert(std::endian::native == std::endian::little,
-                "native POD Buffer<T> is currently supported only on little-endian targets");
   static_assert(std::is_default_constructible_v<T>,
                 "native POD Buffer<T> requires default-constructible T for resize/deserialize operations");
   static_assert(T_RecordsPerPage > 0, "records per page must be greater than zero");
@@ -680,6 +741,9 @@ class Buffer<T, T_RecordsPerPage, T_ByteStoragePolicy, std::enable_if_t<!has_rec
   static constexpr std::size_t kRecordsPerPage = T_RecordsPerPage;
   static constexpr std::size_t kPageSizeBytes = kPageBytes;
 
+  using iterator = decltype(std::declval<storage_type&>().begin());
+  using const_iterator = decltype(std::declval<const storage_type&>().begin());
+
   Buffer() = default;
 
   [[nodiscard]] std::size_t size() const { return values_.size(); }
@@ -690,8 +754,28 @@ class Buffer<T, T_RecordsPerPage, T_ByteStoragePolicy, std::enable_if_t<!has_rec
 
   void clear() { values_.clear(); }
 
+  void reserve(std::size_t count) {
+    if constexpr (requires(storage_type& storage, std::size_t n) { storage.reserve(n); }) {
+      values_.reserve(count);
+    }
+  }
+
+  void resize(std::size_t count) { values_.resize(count); }
+
+  void shrink_to_fit() {
+    if constexpr (requires(storage_type& storage) { storage.shrink_to_fit(); }) {
+      values_.shrink_to_fit();
+    }
+  }
+
   ref emplace_back() {
     values_.emplace_back();
+    return values_.back();
+  }
+
+  template <typename... Args, typename = std::enable_if_t<(sizeof...(Args) > 0)>>
+  ref emplace_back(Args&&... args) {
+    values_.emplace_back(std::forward<Args>(args)...);
     return values_.back();
   }
 
@@ -701,9 +785,48 @@ class Buffer<T, T_RecordsPerPage, T_ByteStoragePolicy, std::enable_if_t<!has_rec
     return values_.back();
   }
 
+  void push_back(const T& value) { values_.push_back(value); }
+
+  void push_back(T&& value) { values_.push_back(std::move(value)); }
+
   ref operator[](std::size_t index) { return values_[index]; }
 
   const_ref operator[](std::size_t index) const { return values_[index]; }
+
+  ref at(std::size_t index) { return values_.at(index); }
+
+  const_ref at(std::size_t index) const { return values_.at(index); }
+
+  ref back() { return values_.back(); }
+
+  const_ref back() const { return values_.back(); }
+
+  iterator begin() { return values_.begin(); }
+
+  const_iterator begin() const { return values_.begin(); }
+
+  const_iterator cbegin() const { return values_.begin(); }
+
+  iterator end() { return values_.end(); }
+
+  const_iterator end() const { return values_.end(); }
+
+  const_iterator cend() const { return values_.end(); }
+
+  template <typename InputIt>
+  iterator insert(const_iterator pos, InputIt first, InputIt last) {
+    return values_.insert(pos, first, last);
+  }
+
+  template <typename Storage = storage_type>
+  auto data() -> decltype(std::declval<Storage&>().data()) {
+    return values_.data();
+  }
+
+  template <typename Storage = storage_type>
+  auto data() const -> decltype(std::declval<const Storage&>().data()) {
+    return values_.data();
+  }
 
   [[nodiscard]] std::vector<std::byte> bytes() const {
     std::vector<std::byte> out(byte_size());

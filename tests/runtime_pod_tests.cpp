@@ -122,13 +122,19 @@ int main() {
   noserde::Buffer<PodEnvelope> records;
   auto rec = records.emplace_back();
   rec.point = glm::fvec3{10.0F, 11.0F, 12.0F};
+  auto& point_ref = rec.point.ref();
+  assert(point_ref.x == 10.0F);
+  point_ref.y = 44.0F;
+  assert(static_cast<glm::fvec3>(rec.point).y == 44.0F);
   rec.tagged.emplace<glm::fvec3>(glm::fvec3{1.0F, 2.0F, 3.0F});
   rec.raw.emplace<glm::fvec3>(glm::fvec3{4.0F, 5.0F, 6.0F});
 
   auto* tagged = rec.tagged.get_if<glm::fvec3>();
   assert(tagged != nullptr);
+  auto& tagged_ref = tagged->ref();
+  tagged_ref.x = 7.0F;
   const glm::fvec3 tagged_value = static_cast<glm::fvec3>(*tagged);
-  assert(tagged_value.x == 1.0F);
+  assert(tagged_value.x == 7.0F);
   assert(tagged_value.y == 2.0F);
   assert(tagged_value.z == 3.0F);
 
@@ -136,6 +142,12 @@ int main() {
   assert(raw_value.x == 4.0F);
   assert(raw_value.y == 5.0F);
   assert(raw_value.z == 6.0F);
+
+  const auto c0 = static_cast<const noserde::Buffer<PodEnvelope>&>(records)[0];
+  const auto& cpoint = c0.point.ref();
+  assert(cpoint.x == 10.0F);
+  assert(cpoint.y == 44.0F);
+  assert(cpoint.z == 12.0F);
 
   return 0;
 }

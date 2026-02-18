@@ -13,7 +13,7 @@ option(NOSERDE_BUILD_BENCHMARKS "Build noserde benchmarks" ON)
 
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
-set(NOSERDE_GENERATOR "${CMAKE_SOURCE_DIR}/tools/noserde_gen.py")
+set(NOSERDE_GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/noserde_gen.py")
 if(NOT EXISTS "${NOSERDE_GENERATOR}")
   message(FATAL_ERROR "noserde generator not found: ${NOSERDE_GENERATOR}")
 endif()
@@ -241,8 +241,8 @@ target_include_directories(noserde_runtime
   INTERFACE
     ${NOSERDE_DEP_INCLUDE_DIRS}
     "${NOSERDE_GENERATED_DIR}"
-    "${CMAKE_SOURCE_DIR}/include"
-    "${CMAKE_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}"
 )
 
 add_library(noserde_examples INTERFACE)
@@ -302,21 +302,17 @@ if(BUILD_TESTING)
   add_test(NAME noserde_runtime_bitsery_tests COMMAND noserde_runtime_bitsery_tests)
 
   if(NOSERDE_WITH_GLM)
-    if(CMAKE_CXX_BYTE_ORDER STREQUAL "BIG_ENDIAN")
-      message(STATUS "Skipping noserde_runtime_pod_tests: native POD fast path requires little-endian")
-    else()
-      add_executable(noserde_runtime_pod_tests
-        tests/runtime_pod_tests.cpp
-        tests/pod_schema.h
-      )
-      target_link_libraries(noserde_runtime_pod_tests PRIVATE noserde_runtime)
-      add_test(NAME noserde_runtime_pod_tests COMMAND noserde_runtime_pod_tests)
-    endif()
+    add_executable(noserde_runtime_pod_tests
+      tests/runtime_pod_tests.cpp
+      tests/pod_schema.h
+    )
+    target_link_libraries(noserde_runtime_pod_tests PRIVATE noserde_runtime)
+    add_test(NAME noserde_runtime_pod_tests COMMAND noserde_runtime_pod_tests)
   endif()
 
   add_test(
     NAME noserde_generator_tests
-    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/generator_tests.py" "${NOSERDE_GENERATOR}" "${CMAKE_SOURCE_DIR}"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/generator_tests.py" "${NOSERDE_GENERATOR}" "${CMAKE_CURRENT_SOURCE_DIR}"
   )
 endif()
 
