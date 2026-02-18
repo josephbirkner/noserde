@@ -15,7 +15,7 @@ import re
 import sys
 from typing import Iterable, List, Sequence, Tuple
 
-GENERATOR_VERSION = "0.1.8"
+GENERATOR_VERSION = "0.1.9"
 FORMAT_VERSION = "1"
 ATTRIBUTE_TOKEN = "[[noserde]]"
 DIGEST_PATTERN = re.compile(r"^// digest: ([0-9a-f]{64})$", re.MULTILINE)
@@ -1083,8 +1083,8 @@ def run(args: argparse.Namespace) -> int:
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Generate noserde headers from .h.noserde sources")
-    parser.add_argument("--in", dest="input", required=True, help="Input .h.noserde file")
+    parser = argparse.ArgumentParser(description="Generate noserde headers from schema headers")
+    parser.add_argument("--in", dest="input", required=True, help="Input schema header")
     parser.add_argument("--out", dest="output", required=True, help="Output generated header")
     parser.add_argument("--check", action="store_true", help="Check output is up to date")
     return parser

@@ -31,11 +31,13 @@ Out of scope:
 
 ## Workflow
 
-1. Author a source header with `.h.noserde` suffix.
+1. Author a source header (for example `my_schema.h`) with `[[noserde]]` structs.
 2. Tag target structs with `[[noserde]]`.
-3. Add the `.h.noserde` file to a target's source list and link that target with `noserde_runtime` (or `noserde::runtime`).
-4. Run CMake configure. The generator creates mirrored `.h` files under `build/noserde_generated/`.
-5. Include the generated `.h` in your code.
+3. Add that header to a target's source list and link that target with `noserde_runtime` (or `noserde::runtime`).
+4. Build the target. The generator creates mirrored headers under `build/noserde_generated/`.
+5. Include the same header path you authored (for example `#include "my_schema.h"`). Generated headers shadow source headers automatically.
+
+The shadowing is intentional: the generated include directory is placed before the source tree, so the generated types are the only ones seen by the compiler for schema headers (no duplicate-type collisions).
 
 ## Dependencies
 
@@ -55,7 +57,7 @@ git submodule update --init --recursive
 
 `tools/noserde_gen.py` (Python stdlib only):
 
-- `--in <file.h.noserde>`
+- `--in <schema header>`
 - `--out <file.h>`
 - `--check`
 
@@ -100,7 +102,7 @@ Named unions expose a nested type scope for inline alternatives, e.g. `MyStruct:
 ### 1) Define a schema with nested named struct + union alternatives
 
 ```cpp
-// schemas/telemetry.h.noserde
+// schemas/telemetry.h
 #pragma once
 #include <cstdint>
 
@@ -136,12 +138,12 @@ enum class Channel : std::uint8_t {
 ```cmake
 add_executable(telemetry_app
   src/main.cpp
-  schemas/telemetry.h.noserde
+  schemas/telemetry.h
 )
 target_link_libraries(telemetry_app PRIVATE noserde_runtime)
 ```
 
-Linking `noserde_runtime` + listing `.h.noserde` in target sources is enough.
+Linking `noserde_runtime` + listing the schema header in target sources is enough.
 
 ### 3) Hot-path record writes and type-based union access
 

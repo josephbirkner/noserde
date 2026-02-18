@@ -55,8 +55,8 @@ class GeneratorBehaviorTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             tmp = pathlib.Path(td)
-            in_path = tmp / "demo.h.noserde"
-            out_path = tmp / "demo.h"
+            in_path = tmp / "demo.h"
+            out_path = tmp / "demo.gen.h"
             in_path.write_text(source, encoding="utf-8")
 
             result = self.run_gen(in_path, out_path)
@@ -82,8 +82,8 @@ class GeneratorBehaviorTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             tmp = pathlib.Path(td)
-            in_path = tmp / "a.h.noserde"
-            out_path = tmp / "a.h"
+            in_path = tmp / "a.h"
+            out_path = tmp / "a.gen.h"
             in_path.write_text(source, encoding="utf-8")
 
             first = self.run_gen(in_path, out_path)
@@ -110,14 +110,14 @@ class GeneratorBehaviorTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             tmp = pathlib.Path(td)
-            in_path = tmp / "bad.h.noserde"
-            out_path = tmp / "bad.h"
+            in_path = tmp / "bad.h"
+            out_path = tmp / "bad.gen.h"
             in_path.write_text(source, encoding="utf-8")
 
             result = self.run_gen(in_path, out_path)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("pointers/references are not supported", result.stderr)
-            self.assertRegex(result.stderr, r"bad\.h\.noserde:\d+:\d+: error:")
+            self.assertRegex(result.stderr, r"bad\.h:\d+:\d+: error:")
 
     def test_union_record_alternative_codegen(self) -> None:
         source = textwrap.dedent(
@@ -139,8 +139,8 @@ class GeneratorBehaviorTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             tmp = pathlib.Path(td)
-            in_path = tmp / "outer.h.noserde"
-            out_path = tmp / "outer.h"
+            in_path = tmp / "outer.h"
+            out_path = tmp / "outer.gen.h"
             in_path.write_text(source, encoding="utf-8")
 
             result = self.run_gen(in_path, out_path)
@@ -170,8 +170,8 @@ class GeneratorBehaviorTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             tmp = pathlib.Path(td)
-            in_path = tmp / "inline.h.noserde"
-            out_path = tmp / "inline.h"
+            in_path = tmp / "inline.h"
+            out_path = tmp / "inline.gen.h"
             in_path.write_text(source, encoding="utf-8")
 
             result = self.run_gen(in_path, out_path)
@@ -203,8 +203,8 @@ class GeneratorBehaviorTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             tmp = pathlib.Path(td)
-            in_path = tmp / "inline_bad_union.h.noserde"
-            out_path = tmp / "inline_bad_union.h"
+            in_path = tmp / "inline_bad_union.h"
+            out_path = tmp / "inline_bad_union.gen.h"
             in_path.write_text(source, encoding="utf-8")
 
             result = self.run_gen(in_path, out_path)
@@ -223,8 +223,8 @@ class GeneratorBehaviorTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             tmp = pathlib.Path(td)
-            in_path = tmp / "inline_bad.h.noserde"
-            out_path = tmp / "inline_bad.h"
+            in_path = tmp / "inline_bad.h"
+            out_path = tmp / "inline_bad.gen.h"
             in_path.write_text(source, encoding="utf-8")
 
             result = self.run_gen(in_path, out_path)
