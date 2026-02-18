@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(CTest)
+option(NOSERDE_WITH_GLM "Fetch optional GLM headers and enable native POD integration tests" ON)
 include(cmake/deps.cmake)
 
 option(NOSERDE_BUILD_BENCHMARKS "Build noserde benchmarks" ON)
@@ -299,6 +300,19 @@ if(BUILD_TESTING)
   )
   target_link_libraries(noserde_runtime_bitsery_tests PRIVATE noserde_runtime)
   add_test(NAME noserde_runtime_bitsery_tests COMMAND noserde_runtime_bitsery_tests)
+
+  if(NOSERDE_WITH_GLM)
+    if(CMAKE_CXX_BYTE_ORDER STREQUAL "BIG_ENDIAN")
+      message(STATUS "Skipping noserde_runtime_pod_tests: native POD fast path requires little-endian")
+    else()
+      add_executable(noserde_runtime_pod_tests
+        tests/runtime_pod_tests.cpp
+        tests/pod_schema.h
+      )
+      target_link_libraries(noserde_runtime_pod_tests PRIVATE noserde_runtime)
+      add_test(NAME noserde_runtime_pod_tests COMMAND noserde_runtime_pod_tests)
+    endif()
+  endif()
 
   add_test(
     NAME noserde_generator_tests

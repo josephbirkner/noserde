@@ -29,6 +29,15 @@ CPMAddPackage(
   DOWNLOAD_ONLY YES
 )
 
+if(NOSERDE_WITH_GLM)
+  CPMAddPackage(
+    NAME glm
+    GITHUB_REPOSITORY g-truc/glm
+    GIT_TAG 1.0.1
+    DOWNLOAD_ONLY YES
+  )
+endif()
+
 set(NOSERDE_DEP_INCLUDE_DIRS "")
 
 set(_tl_expected_include "${tl_expected_SOURCE_DIR}/include")
@@ -48,3 +57,11 @@ if(NOT EXISTS "${_bitsery_include}/bitsery/serializer.h")
   message(FATAL_ERROR "bitsery headers not found at ${_bitsery_include}")
 endif()
 list(APPEND NOSERDE_DEP_INCLUDE_DIRS "${_bitsery_include}")
+
+if(NOSERDE_WITH_GLM)
+  set(_glm_include "${glm_SOURCE_DIR}")
+  if(NOT EXISTS "${_glm_include}/glm/vec3.hpp")
+    message(FATAL_ERROR "glm headers not found at ${_glm_include}")
+  endif()
+  list(APPEND NOSERDE_DEP_INCLUDE_DIRS "${_glm_include}")
+endif()

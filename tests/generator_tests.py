@@ -268,6 +268,33 @@ class GeneratorBehaviorTests(unittest.TestCase):
             self.assertIn("meta_offset", generated)
             self.assertIn("payload_tag_offset", generated)
 
+    def test_gated_pod_field_codegen(self) -> None:
+        source = textwrap.dedent(
+            """
+            #pragma once
+            #include <cstdint>
+            #include <glm/vec3.hpp>
+            struct [[noserde]] Pod {
+              glm::fvec3 point;
+              noserde::variant<glm::fvec3, std::uint32_t> tagged;
+            };
+            """
+        ).strip() + "\n"
+
+        with tempfile.TemporaryDirectory() as td:
+            tmp = pathlib.Path(td)
+            in_path = tmp / "pod.h"
+            out_path = tmp / "pod.gen.h"
+            in_path.write_text(source, encoding="utf-8")
+
+            result = self.run_gen(in_path, out_path)
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+
+            generated = out_path.read_text(encoding="utf-8")
+            self.assertIn("point_offset + noserde::wire_sizeof<glm::fvec3>()", generated)
+            self.assertIn("noserde::scalar_ref<glm::fvec3> point;", generated)
+            self.assertIn("using tagged_data = std::variant<glm::fvec3, std::uint32_t>;", generated)
+
     def test_union_keyword_rejected(self) -> None:
         source = textwrap.dedent(
             """
