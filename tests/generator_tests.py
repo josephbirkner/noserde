@@ -119,7 +119,7 @@ class GeneratorBehaviorTests(unittest.TestCase):
             self.assertIn("pointers/references are not supported", result.stderr)
             self.assertRegex(result.stderr, r"bad\.h:\d+:\d+: error:")
 
-    def test_union_record_alternative_codegen(self) -> None:
+    def test_variant_record_alternative_codegen(self) -> None:
         source = textwrap.dedent(
             """
             #pragma once
@@ -129,10 +129,7 @@ class GeneratorBehaviorTests(unittest.TestCase):
             };
 
             [[noserde]] struct Outer {
-              union V {
-                Inner as_inner;
-                std::uint32_t as_int;
-              } v;
+              noserde::variant<Inner, std::uint32_t> v;
             };
             """
         ).strip() + "\n"
@@ -147,23 +144,51 @@ class GeneratorBehaviorTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, msg=result.stderr)
 
             generated = out_path.read_text(encoding="utf-8")
-            self.assertIn("typename noserde::record_traits<Inner>::ref as_inner;", generated)
+            self.assertIn("class v_variant_ref {", generated)
             self.assertIn("using v_data = std::variant<Inner::Data, std::uint32_t>;", generated)
+            self.assertIn("v_tag_offset", generated)
             self.assertIn("static void assign_data(Ref dst, const Data& src)", generated)
             self.assertIn("std::visit(", generated)
             self.assertIn("record alternatives support only default emplace() in v1", generated)
             self.assertNotIn(" get<", generated)
 
-    def test_named_inline_struct_field_and_union_alt_codegen(self) -> None:
+    def test_union_storage_codegen(self) -> None:
+        source = textwrap.dedent(
+            """
+            #pragma once
+            #include <cstdint>
+            [[noserde]] struct Inner {
+              std::uint16_t x;
+            };
+
+            [[noserde]] struct Outer {
+              noserde::union_<Inner, std::uint32_t> v;
+            };
+            """
+        ).strip() + "\n"
+
+        with tempfile.TemporaryDirectory() as td:
+            tmp = pathlib.Path(td)
+            in_path = tmp / "outer_union.h"
+            out_path = tmp / "outer_union.gen.h"
+            in_path.write_text(source, encoding="utf-8")
+
+            result = self.run_gen(in_path, out_path)
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+
+            generated = out_path.read_text(encoding="utf-8")
+            self.assertIn("class v_union_ref {", generated)
+            self.assertIn("auto as() {", generated)
+            self.assertIn("using v_data = std::variant<Inner::Data, std::uint32_t>;", generated)
+            self.assertNotIn("v_tag_offset", generated)
+
+    def test_named_inline_struct_field_and_variant_codegen(self) -> None:
         source = textwrap.dedent(
             """
             #pragma once
             [[noserde]] struct Inline {
               struct Meta { std::int16_t x; bool y; } meta;
-              union Payload {
-                struct Words { std::uint32_t hi; std::uint32_t lo; } words;
-                double as_double;
-              } payload;
+              noserde::variant<std::uint32_t, double> payload;
             };
             """
         ).strip() + "\n"
@@ -179,21 +204,18 @@ class GeneratorBehaviorTests(unittest.TestCase):
 
             generated = out_path.read_text(encoding="utf-8")
             self.assertIn("struct Inline__meta__Meta {", generated)
-            self.assertIn("struct Inline__Payload__words__Words {", generated)
-            self.assertIn("struct Payload {", generated)
-            self.assertIn("using Words = Inline__Payload__words__Words;", generated)
-            self.assertIn("using payload_data = std::variant<Inline__Payload__words__Words::Data, double>;", generated)
+            self.assertIn("class payload_variant_ref {", generated)
+            self.assertIn("using payload_data = std::variant<std::uint32_t, double>;", generated)
             self.assertIn("type_count<Alternative>() == 1u", generated)
             self.assertIn("meta_offset", generated)
-            self.assertNotRegex(generated, r"struct\\s+\\w+_tag\\s*\\{")
-            self.assertNotIn("_tag =", generated)
+            self.assertIn("payload_tag_offset", generated)
 
-    def test_anonymous_union_rejected(self) -> None:
+    def test_union_keyword_rejected(self) -> None:
         source = textwrap.dedent(
             """
             #pragma once
             [[noserde]] struct Inline {
-              union {
+              union Legacy {
                 std::int16_t x;
                 bool y;
               } payload;
@@ -209,7 +231,27 @@ class GeneratorBehaviorTests(unittest.TestCase):
 
             result = self.run_gen(in_path, out_path)
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("anonymous unions are not supported", result.stderr)
+            self.assertIn("C++ union fields are no longer supported", result.stderr)
+
+    def test_inline_variant_alternative_rejected(self) -> None:
+        source = textwrap.dedent(
+            """
+            #pragma once
+            [[noserde]] struct Inline {
+              noserde::variant<struct Words { std::uint32_t hi; std::uint32_t lo; }, double> payload;
+            };
+            """
+        ).strip() + "\n"
+
+        with tempfile.TemporaryDirectory() as td:
+            tmp = pathlib.Path(td)
+            in_path = tmp / "inline_bad_variant_alt.h"
+            out_path = tmp / "inline_bad_variant_alt.gen.h"
+            in_path.write_text(source, encoding="utf-8")
+
+            result = self.run_gen(in_path, out_path)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("inline aggregate alternatives are not supported", result.stderr)
 
     def test_anonymous_inline_struct_rejected(self) -> None:
         source = textwrap.dedent(

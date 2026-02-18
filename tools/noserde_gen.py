@@ -30,18 +30,14 @@ class ParseError(RuntimeError):
 @dataclasses.dataclass
 class UnionAlt:
     type_name: str
-    name: str
     is_record: bool = False
-    inline_type_name: str = ""
-    inline_record: "InlineRecord | None" = None
 
 
 @dataclasses.dataclass
 class Field:
-    kind: str  # scalar | record | union
+    kind: str  # scalar | record | variant | union_
     name: str
     type_name: str = ""
-    union_type_name: str = ""
     union_alts: List[UnionAlt] = dataclasses.field(default_factory=list)
     inline_record: "InlineRecord | None" = None
 
@@ -386,67 +382,136 @@ def parse_inline_struct(type_name: str, origin_index: int) -> Tuple[str, str] | 
     return record_name, after_name[1:close]
 
 
-def parse_union_decl(decl: str, origin_index: int) -> Field:
-    union_kw = re.match(r"^union\b", decl)
-    if not union_kw:
-        raise ParseError("internal error: union declaration expected", origin_index)
+def split_top_level_template_args(text: str, origin_index: int) -> List[str]:
+    args: List[str] = []
+    start = 0
+    i = 0
+    n = len(text)
+    angle_depth = 0
+    paren_depth = 0
+    bracket_depth = 0
+    mode = "code"
+    escape = False
 
-    open_brace = decl.find("{")
-    if open_brace == -1:
-        raise ParseError("expected '{' in union declaration", origin_index)
+    while i < n:
+        if mode == "code":
+            if text.startswith("//", i):
+                mode = "line"
+                i += 2
+                continue
+            if text.startswith("/*", i):
+                mode = "block"
+                i += 2
+                continue
+            ch = text[i]
+            if ch == '"':
+                mode = "dquote"
+                escape = False
+                i += 1
+                continue
+            if ch == "'":
+                mode = "squote"
+                escape = False
+                i += 1
+                continue
 
-    union_head = normalize_type(decl[:open_brace].strip())
-    union_head_match = re.match(r"^union\s+([A-Za-z_]\w*)$", union_head)
-    if not union_head_match:
-        if union_head == "union":
-            raise ParseError(
-                "anonymous unions are not supported; use 'union Name { ... } field;'",
-                origin_index,
-            )
-        raise ParseError(
-            "expected named union declaration: 'union Name { ... } field;'",
-            origin_index,
-        )
-    union_type_name = union_head_match.group(1)
+            if ch == "<":
+                angle_depth += 1
+            elif ch == ">":
+                angle_depth -= 1
+                if angle_depth < 0:
+                    raise ParseError("unexpected '>' in template argument list", origin_index + i)
+            elif ch == "(":
+                paren_depth += 1
+            elif ch == ")":
+                paren_depth -= 1
+                if paren_depth < 0:
+                    raise ParseError("unexpected ')' in template argument list", origin_index + i)
+            elif ch == "[":
+                bracket_depth += 1
+            elif ch == "]":
+                bracket_depth -= 1
+                if bracket_depth < 0:
+                    raise ParseError("unexpected ']' in template argument list", origin_index + i)
+            elif ch == "," and angle_depth == 0 and paren_depth == 0 and bracket_depth == 0:
+                part = text[start:i].strip()
+                if not part:
+                    raise ParseError("empty type in template argument list", origin_index + i)
+                args.append(part)
+                start = i + 1
+            i += 1
+            continue
 
-    close_brace = find_matching_brace(decl, open_brace)
-    after = decl[close_brace + 1 :].strip()
-    if not re.match(r"^[A-Za-z_]\w*$", after):
-        raise ParseError("expected union field name after '}'", origin_index + close_brace + 1)
+        if mode == "line":
+            if text[i] == "\n":
+                mode = "code"
+            i += 1
+            continue
 
-    field_name = after
-    inner = decl[open_brace + 1 : close_brace]
-    alt_decls = split_top_level_decls(inner)
-    if not alt_decls:
-        raise ParseError("union must contain at least one alternative", origin_index + open_brace)
+        if mode == "block":
+            if text.startswith("*/", i):
+                mode = "code"
+                i += 2
+            else:
+                i += 1
+            continue
 
-    alts: List[UnionAlt] = []
-    inline_type_names: set[str] = set()
-    for alt_decl in alt_decls:
-        alt_type, alt_name = parse_type_name_pair(alt_decl, origin_index)
-        inline_struct = parse_inline_struct(alt_type, origin_index)
-        if inline_struct is None:
-            alts.append(UnionAlt(type_name=alt_type, name=alt_name))
-        else:
-            inline_name, inline_body = inline_struct
-            if inline_name in inline_type_names:
+        if mode in ("dquote", "squote"):
+            quote = '"' if mode == "dquote" else "'"
+            ch = text[i]
+            if escape:
+                escape = False
+                i += 1
+                continue
+            if ch == "\\":
+                escape = True
+                i += 1
+                continue
+            if ch == quote:
+                mode = "code"
+            i += 1
+            continue
+
+    if angle_depth != 0 or paren_depth != 0 or bracket_depth != 0:
+        raise ParseError("unbalanced template argument list", origin_index)
+
+    trailing = text[start:].strip()
+    if not trailing:
+        raise ParseError("empty type in template argument list", origin_index + n)
+    args.append(trailing)
+    return args
+
+
+def parse_noserde_sum_type(type_name: str, field_name: str, origin_index: int) -> Field | None:
+    normalized = normalize_type(type_name)
+    for field_kind, prefix in (("variant", "noserde::variant<"), ("union_", "noserde::union_<")):
+        if not normalized.startswith(prefix):
+            continue
+        if not normalized.endswith(">"):
+            raise ParseError(f"{prefix[:-1]} requires a closing '>'", origin_index)
+
+        inner = normalized[len(prefix):-1].strip()
+        if not inner:
+            raise ParseError(f"{prefix[:-1]} must contain at least one alternative type", origin_index)
+
+        args = split_top_level_template_args(inner, origin_index)
+        alts: List[UnionAlt] = []
+        for raw_alt in args:
+            alt_type = normalize_type(raw_alt)
+            if any(token in alt_type for token in ("*", "&")):
+                raise ParseError("pointers/references are not supported in noserde sum types", origin_index)
+            if "[" in alt_type or "]" in alt_type:
+                raise ParseError("arrays are not supported in noserde sum types", origin_index)
+            if alt_type.startswith("struct") or alt_type.startswith("union"):
                 raise ParseError(
-                    f"duplicate inline type name '{inline_name}' in union '{union_type_name}'",
+                    "inline aggregate alternatives are not supported in noserde::variant/union_; declare a named struct first",
                     origin_index,
                 )
-            inline_type_names.add(inline_name)
-            inline_fields = parse_struct_fields(inline_body, origin_index)
-            alts.append(
-                UnionAlt(
-                    type_name="",
-                    name=alt_name,
-                    is_record=True,
-                    inline_type_name=inline_name,
-                    inline_record=InlineRecord(name=inline_name, fields=inline_fields),
-                )
-            )
+            alts.append(UnionAlt(type_name=alt_type))
 
-    return Field(kind="union", name=field_name, union_type_name=union_type_name, union_alts=alts)
+        return Field(kind=field_kind, name=field_name, union_alts=alts)
+
+    return None
 
 
 def parse_struct_fields(body: str, body_origin_index: int) -> List[Field]:
@@ -460,17 +525,25 @@ def parse_struct_fields(body: str, body_origin_index: int) -> List[Field]:
         if stripped in ("public:", "private:", "protected:"):
             continue
 
+        decl_origin = body_origin_index + body.find(stripped)
         if re.match(r"^union\b", stripped):
-            fields.append(parse_union_decl(stripped, body_origin_index + body.find(stripped)))
+            raise ParseError(
+                "C++ union fields are no longer supported; use noserde::variant<T...> or noserde::union_<T...>",
+                decl_origin,
+            )
+
+        type_name, field_name = parse_type_name_pair(stripped, decl_origin)
+        sum_field = parse_noserde_sum_type(type_name, field_name, decl_origin)
+        if sum_field is not None:
+            fields.append(sum_field)
             continue
 
-        type_name, field_name = parse_type_name_pair(stripped, body_origin_index + body.find(stripped))
-        inline_struct = parse_inline_struct(type_name, body_origin_index + body.find(stripped))
+        inline_struct = parse_inline_struct(type_name, decl_origin)
         if inline_struct is None:
             fields.append(Field(kind="scalar", name=field_name, type_name=type_name))
         else:
             inline_name, inline_body = inline_struct
-            inline_fields = parse_struct_fields(inline_body, body_origin_index + body.find(stripped))
+            inline_fields = parse_struct_fields(inline_body, decl_origin)
             fields.append(
                 Field(
                     kind="record",
@@ -544,47 +617,23 @@ def synthesize_inline_helpers_for_block(block: StructBlock) -> List[StructBlock]
 
     def synthesize_from_fields(fields: Sequence[Field], path: Sequence[str]) -> None:
         for field in fields:
-            if field.kind == "union":
-                for alt in field.union_alts:
-                    if alt.inline_record is None:
-                        continue
-                    inline_name = alt.inline_record.name
-                    union_path_name = field.union_type_name if field.union_type_name else field.name
-                    helper_name = reserve_helper_name(*(list(path) + [union_path_name, alt.name, inline_name]))
-                    synthesize_from_fields(
-                        alt.inline_record.fields,
-                        list(path) + [union_path_name, alt.name, inline_name],
-                    )
-                    helpers.append(
-                        StructBlock(
-                            name=helper_name,
-                            body="",
-                            start=block.start,
-                            end=block.end,
-                            fields=alt.inline_record.fields,
-                        )
-                    )
-                    alt.type_name = helper_name
-                    alt.is_record = True
-                    alt.inline_record = None
-            else:
-                if field.inline_record is None:
-                    continue
-                inline_name = field.inline_record.name
-                helper_name = reserve_helper_name(*(list(path) + [field.name, inline_name]))
-                synthesize_from_fields(field.inline_record.fields, list(path) + [field.name, inline_name])
-                helpers.append(
-                    StructBlock(
-                        name=helper_name,
-                        body="",
-                        start=block.start,
-                        end=block.end,
-                        fields=field.inline_record.fields,
-                    )
+            if field.inline_record is None:
+                continue
+            inline_name = field.inline_record.name
+            helper_name = reserve_helper_name(*(list(path) + [field.name, inline_name]))
+            synthesize_from_fields(field.inline_record.fields, list(path) + [field.name, inline_name])
+            helpers.append(
+                StructBlock(
+                    name=helper_name,
+                    body="",
+                    start=block.start,
+                    end=block.end,
+                    fields=field.inline_record.fields,
                 )
-                field.type_name = helper_name
-                field.kind = "record"
-                field.inline_record = None
+            )
+            field.type_name = helper_name
+            field.kind = "record"
+            field.inline_record = None
 
     synthesize_from_fields(block.fields, [block.name])
     return helpers
@@ -592,7 +641,7 @@ def synthesize_inline_helpers_for_block(block: StructBlock) -> List[StructBlock]
 
 def classify_field_list(fields: Sequence[Field], record_names: set[str]) -> None:
     for field in fields:
-        if field.kind == "union":
+        if field.kind in ("variant", "union_"):
             for alt in field.union_alts:
                 alt.is_record = alt.type_name in record_names
         else:
@@ -629,7 +678,7 @@ def data_type_expr_for_alt(alt: UnionAlt) -> str:
 def data_type_expr_for_field(field: Field) -> str:
     if field.kind == "record":
         return f"{field.type_name}::Data"
-    if field.kind == "union":
+    if field.kind in ("variant", "union_"):
         alt_types = ", ".join(data_type_expr_for_alt(alt) for alt in field.union_alts)
         return f"std::variant<{alt_types}>"
     return field.type_name
@@ -638,10 +687,10 @@ def data_type_expr_for_field(field: Field) -> str:
 def schema_hash64(block: StructBlock) -> int:
     parts: List[str] = [block.name]
     for field in block.fields:
-        if field.kind == "union":
-            parts.append(f"union:{field.name}")
+        if field.kind in ("variant", "union_"):
+            parts.append(f"{field.kind}:{field.name}")
             for alt in field.union_alts:
-                parts.append(f"alt:{alt.type_name}:{alt.name}:{int(alt.is_record)}")
+                parts.append(f"alt:{alt.type_name}:{int(alt.is_record)}")
         else:
             parts.append(f"{field.kind}:{field.type_name}:{field.name}")
 
@@ -649,8 +698,8 @@ def schema_hash64(block: StructBlock) -> int:
     return int.from_bytes(digest[:8], byteorder="little", signed=False)
 
 
-def render_union_class(union_field: Field, const_ref: bool) -> List[str]:
-    class_name = f"{union_field.name}_union_const_ref" if const_ref else f"{union_field.name}_union_ref"
+def render_variant_class(sum_field: Field, const_ref: bool) -> List[str]:
+    class_name = f"{sum_field.name}_variant_const_ref" if const_ref else f"{sum_field.name}_variant_ref"
     tag_ptr_type = "const std::byte*" if const_ref else "std::byte*"
     payload_ptr_type = "const std::byte*" if const_ref else "std::byte*"
 
@@ -659,10 +708,8 @@ def render_union_class(union_field: Field, const_ref: bool) -> List[str]:
     lines.append("   private:")
     lines.append(f"    {tag_ptr_type} tag_ptr_;")
     lines.append(f"    {payload_ptr_type} payload_ptr_;")
-    lines.append("")
-    lines.append("   public:")
-
-    for alt in union_field.union_alts:
+    for idx, alt in enumerate(sum_field.union_alts):
+        member_name = f"alt_{idx}"
         if alt.is_record:
             member_type = (
                 f"typename noserde::record_traits<{alt.type_name}>::const_ref"
@@ -675,28 +722,29 @@ def render_union_class(union_field: Field, const_ref: bool) -> List[str]:
                 if const_ref
                 else f"noserde::scalar_ref<{alt.type_name}>"
             )
-        lines.append(f"    {member_type} {alt.name};")
+        lines.append(f"    {member_type} {member_name};")
 
     lines.append("")
+    lines.append("   public:")
     init_list = ["tag_ptr_(tag_ptr)", "payload_ptr_(payload_ptr)"]
-    for alt in union_field.union_alts:
+    for idx, alt in enumerate(sum_field.union_alts):
+        member_name = f"alt_{idx}"
         if alt.is_record:
             if const_ref:
                 init_list.append(
-                    f"{alt.name}(noserde::make_record_const_ref<{alt.type_name}>(payload_ptr))"
+                    f"{member_name}(noserde::make_record_const_ref<{alt.type_name}>(payload_ptr))"
                 )
             else:
-                init_list.append(f"{alt.name}(noserde::make_record_ref<{alt.type_name}>(payload_ptr))")
+                init_list.append(
+                    f"{member_name}(noserde::make_record_ref<{alt.type_name}>(payload_ptr))"
+                )
         else:
-            init_list.append(f"{alt.name}(payload_ptr)")
+            init_list.append(f"{member_name}(payload_ptr)")
 
     lines.append(
         f"    explicit {class_name}({tag_ptr_type} tag_ptr, {payload_ptr_type} payload_ptr)"
     )
-    if init_list:
-        lines.append("        : " + ",\n          ".join(init_list) + " {}")
-    else:
-        lines.append("        {}")
+    lines.append("        : " + ",\n          ".join(init_list) + " {}")
 
     lines.append("")
     lines.append("    std::size_t index() const {")
@@ -706,7 +754,7 @@ def render_union_class(union_field: Field, const_ref: bool) -> List[str]:
     lines.append("    template <typename Alternative>")
     lines.append("    static consteval std::size_t type_count() {")
     count_terms = " + ".join(
-        f"(std::is_same_v<Alternative, {alt.type_name}> ? 1u : 0u)" for alt in union_field.union_alts
+        f"(std::is_same_v<Alternative, {alt.type_name}> ? 1u : 0u)" for alt in sum_field.union_alts
     )
     lines.append(f"      return {count_terms};")
     lines.append("    }")
@@ -715,15 +763,15 @@ def render_union_class(union_field: Field, const_ref: bool) -> List[str]:
     lines.append("    template <typename Alternative>")
     lines.append("    static consteval std::size_t type_index() {")
     lines.append(
-        "      static_assert(type_count<Alternative>() == 1u, \"alternative type must appear exactly once in this union\");"
+        "      static_assert(type_count<Alternative>() == 1u, \"alternative type must appear exactly once in this variant\");"
     )
-    for idx, alt in enumerate(union_field.union_alts):
+    for idx, alt in enumerate(sum_field.union_alts):
         cond = "if" if idx == 0 else "else if"
         lines.append(f"      {cond} constexpr (std::is_same_v<Alternative, {alt.type_name}>) {{")
         lines.append(f"        return {idx};")
         lines.append("      }")
     lines.append("      else {")
-    lines.append("        static_assert(noserde::always_false_v<Alternative>, \"unknown union alternative type\");")
+    lines.append("        static_assert(noserde::always_false_v<Alternative>, \"unknown variant alternative type\");")
     lines.append("      }")
     lines.append("    }")
 
@@ -739,27 +787,33 @@ def render_union_class(union_field: Field, const_ref: bool) -> List[str]:
         lines.append("    auto get_if() const {")
     else:
         lines.append("    auto get_if() {")
-    for idx, alt in enumerate(union_field.union_alts):
+    for idx, alt in enumerate(sum_field.union_alts):
+        member_name = f"alt_{idx}"
         cond = "if" if idx == 0 else "else if"
         lines.append(f"      {cond} constexpr (std::is_same_v<Alternative, {alt.type_name}>) {{")
         lines.append("        if (!holds_alternative<Alternative>()) {")
-        lines.append(f"          return static_cast<decltype(&{alt.name})>(nullptr);")
+        lines.append(f"          return static_cast<decltype(&{member_name})>(nullptr);")
         lines.append("        }")
-        lines.append(f"        return &{alt.name};")
+        lines.append(f"        return &{member_name};")
         lines.append("      }")
     lines.append("      else {")
-    lines.append("        static_assert(noserde::always_false_v<Alternative>, \"unknown union alternative type\");")
+    lines.append("        static_assert(noserde::always_false_v<Alternative>, \"unknown variant alternative type\");")
     lines.append("      }")
     lines.append("    }")
 
     lines.append("")
     lines.append("    template <typename Visitor>")
-    visit_sig = "decltype(auto) visit(Visitor&& visitor) const" if const_ref else "decltype(auto) visit(Visitor&& visitor)"
+    visit_sig = (
+        "decltype(auto) visit(Visitor&& visitor) const"
+        if const_ref
+        else "decltype(auto) visit(Visitor&& visitor)"
+    )
     lines.append(f"    {visit_sig} {{")
     lines.append("      switch (index()) {")
-    for idx, alt in enumerate(union_field.union_alts):
+    for idx, _ in enumerate(sum_field.union_alts):
+        member_name = f"alt_{idx}"
         lines.append(f"        case {idx}:")
-        lines.append(f"          return std::forward<Visitor>(visitor)({alt.name});")
+        lines.append(f"          return std::forward<Visitor>(visitor)({member_name});")
     lines.append("        default:")
     lines.append("          std::abort();")
     lines.append("      }")
@@ -769,9 +823,10 @@ def render_union_class(union_field: Field, const_ref: bool) -> List[str]:
         lines.append("")
         lines.append("    template <typename Alternative, typename... Args>")
         lines.append("    void emplace(Args&&... args) {")
-        lines.append("      noserde::zero_bytes(payload_ptr_, __layout::" + union_field.name + "_payload_size);")
+        lines.append("      noserde::zero_bytes(payload_ptr_, __layout::" + sum_field.name + "_payload_size);")
 
-        for idx, alt in enumerate(union_field.union_alts):
+        for idx, alt in enumerate(sum_field.union_alts):
+            member_name = f"alt_{idx}"
             cond = "if" if idx == 0 else "else if"
             lines.append(f"      {cond} constexpr (std::is_same_v<Alternative, {alt.type_name}>) {{")
             lines.append(
@@ -782,16 +837,124 @@ def render_union_class(union_field: Field, const_ref: bool) -> List[str]:
             else:
                 lines.append("        static_assert(sizeof...(Args) <= 1, \"emplace supports at most one argument\");")
                 lines.append("        if constexpr (sizeof...(Args) == 0) {")
-                lines.append(f"          {alt.name} = {alt.type_name}{{}};")
+                lines.append(f"          {member_name} = {alt.type_name}{{}};")
                 lines.append("        } else {")
                 lines.append(
-                    f"          {alt.name} = static_cast<{alt.type_name}>((std::forward<Args>(args), ...));"
+                    f"          {member_name} = static_cast<{alt.type_name}>((std::forward<Args>(args), ...));"
                 )
                 lines.append("        }")
             lines.append("      }")
 
         lines.append("      else {")
-        lines.append("        static_assert(noserde::always_false_v<Alternative>, \"unknown union alternative type\");")
+        lines.append("        static_assert(noserde::always_false_v<Alternative>, \"unknown variant alternative type\");")
+        lines.append("      }")
+        lines.append("    }")
+
+    lines.append("  };")
+    return lines
+
+
+def render_union_storage_class(sum_field: Field, const_ref: bool) -> List[str]:
+    class_name = f"{sum_field.name}_union_const_ref" if const_ref else f"{sum_field.name}_union_ref"
+    payload_ptr_type = "const std::byte*" if const_ref else "std::byte*"
+
+    lines: List[str] = []
+    lines.append(f"  class {class_name} {{")
+    lines.append("   private:")
+    lines.append(f"    {payload_ptr_type} payload_ptr_;")
+    for idx, alt in enumerate(sum_field.union_alts):
+        member_name = f"alt_{idx}"
+        if alt.is_record:
+            member_type = (
+                f"typename noserde::record_traits<{alt.type_name}>::const_ref"
+                if const_ref
+                else f"typename noserde::record_traits<{alt.type_name}>::ref"
+            )
+        else:
+            member_type = (
+                f"noserde::scalar_cref<{alt.type_name}>"
+                if const_ref
+                else f"noserde::scalar_ref<{alt.type_name}>"
+            )
+        lines.append(f"    {member_type} {member_name};")
+
+    lines.append("")
+    lines.append("   public:")
+    init_list = ["payload_ptr_(payload_ptr)"]
+    for idx, alt in enumerate(sum_field.union_alts):
+        member_name = f"alt_{idx}"
+        if alt.is_record:
+            if const_ref:
+                init_list.append(
+                    f"{member_name}(noserde::make_record_const_ref<{alt.type_name}>(payload_ptr))"
+                )
+            else:
+                init_list.append(
+                    f"{member_name}(noserde::make_record_ref<{alt.type_name}>(payload_ptr))"
+                )
+        else:
+            init_list.append(f"{member_name}(payload_ptr)")
+
+    lines.append(f"    explicit {class_name}({payload_ptr_type} payload_ptr)")
+    lines.append("        : " + ",\n          ".join(init_list) + " {}")
+
+    lines.append("")
+    lines.append("    template <typename Alternative>")
+    lines.append("    static consteval std::size_t type_count() {")
+    count_terms = " + ".join(
+        f"(std::is_same_v<Alternative, {alt.type_name}> ? 1u : 0u)" for alt in sum_field.union_alts
+    )
+    lines.append(f"      return {count_terms};")
+    lines.append("    }")
+
+    lines.append("")
+    lines.append("    template <typename Alternative>")
+    if const_ref:
+        lines.append("    auto as() const {")
+    else:
+        lines.append("    auto as() {")
+    lines.append(
+        "      static_assert(type_count<Alternative>() == 1u, \"alternative type must appear exactly once in this union_\");"
+    )
+    for idx, alt in enumerate(sum_field.union_alts):
+        member_name = f"alt_{idx}"
+        cond = "if" if idx == 0 else "else if"
+        lines.append(f"      {cond} constexpr (std::is_same_v<Alternative, {alt.type_name}>) {{")
+        lines.append(f"        return ({member_name});")
+        lines.append("      }")
+    lines.append("      else {")
+    lines.append("        static_assert(noserde::always_false_v<Alternative>, \"unknown union_ alternative type\");")
+    lines.append("      }")
+    lines.append("    }")
+
+    if not const_ref:
+        lines.append("")
+        lines.append("    template <typename Alternative, typename... Args>")
+        lines.append("    void emplace(Args&&... args) {")
+        lines.append("      noserde::zero_bytes(payload_ptr_, __layout::" + sum_field.name + "_payload_size);")
+        lines.append(
+            "      static_assert(type_count<Alternative>() == 1u, \"alternative type must appear exactly once in this union_\");"
+        )
+
+        for idx, alt in enumerate(sum_field.union_alts):
+            member_name = f"alt_{idx}"
+            cond = "if" if idx == 0 else "else if"
+            lines.append(f"      {cond} constexpr (std::is_same_v<Alternative, {alt.type_name}>) {{")
+            if alt.is_record:
+                lines.append("        static_assert(sizeof...(Args) == 0, \"record alternatives support only default emplace() in v1\");")
+            else:
+                lines.append("        static_assert(sizeof...(Args) <= 1, \"emplace supports at most one argument\");")
+                lines.append("        if constexpr (sizeof...(Args) == 0) {")
+                lines.append(f"          {member_name} = {alt.type_name}{{}};")
+                lines.append("        } else {")
+                lines.append(
+                    f"          {member_name} = static_cast<{alt.type_name}>((std::forward<Args>(args), ...));"
+                )
+                lines.append("        }")
+            lines.append("      }")
+
+        lines.append("      else {")
+        lines.append("        static_assert(noserde::always_false_v<Alternative>, \"unknown union_ alternative type\");")
         lines.append("      }")
         lines.append("    }")
 
@@ -805,14 +968,25 @@ def render_struct(block: StructBlock) -> str:
     lines.append("  struct __layout {")
 
     cursor_expr = "0"
-    union_fields = [f for f in block.fields if f.kind == "union"]
+    variant_fields = [f for f in block.fields if f.kind == "variant"]
+    union_fields = [f for f in block.fields if f.kind == "union_"]
+    sum_fields = [f for f in block.fields if f.kind in ("variant", "union_")]
 
     for field in block.fields:
-        if field.kind == "union":
+        if field.kind == "variant":
             lines.append(f"    static constexpr std::size_t {field.name}_tag_offset = {cursor_expr};")
             lines.append(
                 f"    static constexpr std::size_t {field.name}_payload_offset = {field.name}_tag_offset + noserde::wire_sizeof<std::uint32_t>();"
             )
+            payload_sizes = ", ".join(
+                field_size_expr(alt.type_name, alt.is_record) for alt in field.union_alts
+            )
+            lines.append(
+                f"    static constexpr std::size_t {field.name}_payload_size = noserde::max_size({payload_sizes});"
+            )
+            cursor_expr = f"{field.name}_payload_offset + {field.name}_payload_size"
+        elif field.kind == "union_":
+            lines.append(f"    static constexpr std::size_t {field.name}_payload_offset = {cursor_expr};")
             payload_sizes = ", ".join(
                 field_size_expr(alt.type_name, alt.is_record) for alt in field.union_alts
             )
@@ -830,31 +1004,29 @@ def render_struct(block: StructBlock) -> str:
     lines.append("  };")
     lines.append("")
 
-    for union_field in union_fields:
-        lines.append(f"  struct {union_field.union_type_name} {{")
-        for alt in union_field.union_alts:
-            if alt.inline_type_name:
-                lines.append(f"    using {alt.inline_type_name} = {alt.type_name};")
-        lines.append("  };")
-        lines.append("")
-
-    for union_field in union_fields:
-        alt_types = ", ".join(data_type_expr_for_alt(alt) for alt in union_field.union_alts)
-        lines.append(f"  using {union_field.name}_data = std::variant<{alt_types}>;")
-    if union_fields:
+    for sum_field in sum_fields:
+        alt_types = ", ".join(data_type_expr_for_alt(alt) for alt in sum_field.union_alts)
+        lines.append(f"  using {sum_field.name}_data = std::variant<{alt_types}>;")
+    if sum_fields:
         lines.append("")
 
     lines.append("  struct Data {")
     for field in block.fields:
-        field_data_type = f"{field.name}_data" if field.kind == "union" else data_type_expr_for_field(field)
+        field_data_type = f"{field.name}_data" if field.kind in ("variant", "union_") else data_type_expr_for_field(field)
         lines.append(f"    {field_data_type} {field.name}{{}};")
     lines.append("  };")
     lines.append("")
 
-    for union_field in union_fields:
-        lines.extend(render_union_class(union_field, const_ref=False))
+    for variant_field in variant_fields:
+        lines.extend(render_variant_class(variant_field, const_ref=False))
         lines.append("")
-        lines.extend(render_union_class(union_field, const_ref=True))
+        lines.extend(render_variant_class(variant_field, const_ref=True))
+        lines.append("")
+
+    for union_field in union_fields:
+        lines.extend(render_union_storage_class(union_field, const_ref=False))
+        lines.append("")
+        lines.extend(render_union_storage_class(union_field, const_ref=True))
         lines.append("")
 
     # Ref class
@@ -867,7 +1039,9 @@ def render_struct(block: StructBlock) -> str:
     for field in block.fields:
         if field.kind == "record":
             field_type = f"typename noserde::record_traits<{field.type_name}>::ref"
-        elif field.kind == "union":
+        elif field.kind == "variant":
+            field_type = f"{field.name}_variant_ref"
+        elif field.kind == "union_":
             field_type = f"{field.name}_union_ref"
         else:
             field_type = f"noserde::scalar_ref<{field.type_name}>"
@@ -879,9 +1053,13 @@ def render_struct(block: StructBlock) -> str:
             init_list.append(
                 f"{field.name}(noserde::make_record_ref<{field.type_name}>(base + __layout::{field.name}_offset))"
             )
-        elif field.kind == "union":
+        elif field.kind == "variant":
             init_list.append(
                 f"{field.name}(base + __layout::{field.name}_tag_offset, base + __layout::{field.name}_payload_offset)"
+            )
+        elif field.kind == "union_":
+            init_list.append(
+                f"{field.name}(base + __layout::{field.name}_payload_offset)"
             )
         else:
             init_list.append(f"{field.name}(base + __layout::{field.name}_offset)")
@@ -902,7 +1080,9 @@ def render_struct(block: StructBlock) -> str:
     for field in block.fields:
         if field.kind == "record":
             field_type = f"typename noserde::record_traits<{field.type_name}>::const_ref"
-        elif field.kind == "union":
+        elif field.kind == "variant":
+            field_type = f"{field.name}_variant_const_ref"
+        elif field.kind == "union_":
             field_type = f"{field.name}_union_const_ref"
         else:
             field_type = f"noserde::scalar_cref<{field.type_name}>"
@@ -914,9 +1094,13 @@ def render_struct(block: StructBlock) -> str:
             init_list.append(
                 f"{field.name}(noserde::make_record_const_ref<{field.type_name}>(base + __layout::{field.name}_offset))"
             )
-        elif field.kind == "union":
+        elif field.kind == "variant":
             init_list.append(
                 f"{field.name}(base + __layout::{field.name}_tag_offset, base + __layout::{field.name}_payload_offset)"
+            )
+        elif field.kind == "union_":
+            init_list.append(
+                f"{field.name}(base + __layout::{field.name}_payload_offset)"
             )
         else:
             init_list.append(f"{field.name}(base + __layout::{field.name}_offset)")
@@ -935,7 +1119,7 @@ def render_struct(block: StructBlock) -> str:
     for field in block.fields:
         if field.kind == "record":
             lines.append(f"    {field.type_name}::assign_data(dst.{field.name}, src.{field.name});")
-        elif field.kind == "union":
+        elif field.kind in ("variant", "union_"):
             lines.append("    std::visit(")
             lines.append("        [&](const auto& value) {")
             lines.append("          using Alt = std::decay_t<decltype(value)>;")
@@ -944,14 +1128,19 @@ def render_struct(block: StructBlock) -> str:
                 data_alt = data_type_expr_for_alt(alt)
                 lines.append(f"          {cond} constexpr (std::is_same_v<Alt, {data_alt}>) {{")
                 if alt.is_record:
-                    lines.append(f"            dst.{field.name}.template emplace<{alt.type_name}>();")
-                    lines.append(
-                        f"            auto* value_ref = dst.{field.name}.template get_if<{alt.type_name}>();"
-                    )
-                    lines.append("            if (value_ref == nullptr) {")
-                    lines.append("              std::abort();")
-                    lines.append("            }")
-                    lines.append(f"            {alt.type_name}::assign_data(*value_ref, value);")
+                    if field.kind == "variant":
+                        lines.append(f"            dst.{field.name}.template emplace<{alt.type_name}>();")
+                        lines.append(
+                            f"            auto* value_ref = dst.{field.name}.template get_if<{alt.type_name}>();"
+                        )
+                        lines.append("            if (value_ref == nullptr) {")
+                        lines.append("              std::abort();")
+                        lines.append("            }")
+                        lines.append(f"            {alt.type_name}::assign_data(*value_ref, value);")
+                    else:
+                        lines.append(f"            dst.{field.name}.template emplace<{alt.type_name}>();")
+                        lines.append(f"            auto value_ref = dst.{field.name}.template as<{alt.type_name}>();")
+                        lines.append(f"            {alt.type_name}::assign_data(value_ref, value);")
                 else:
                     lines.append(f"            dst.{field.name}.template emplace<{alt.type_name}>(value);")
                 lines.append("          }")

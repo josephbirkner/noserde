@@ -25,6 +25,12 @@
 
 namespace noserde {
 
+template <typename... TAlternatives>
+struct variant;
+
+template <typename... TAlternatives>
+struct union_;
+
 enum class io_error {
   open_failed,
   write_failed,

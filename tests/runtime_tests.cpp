@@ -14,7 +14,7 @@ concept has_get = requires(U& u) {
   u.template get<std::int32_t>();
 };
 
-static_assert(!has_get<Example::value_union_ref>, "u.get<Alt>() must not be generated");
+static_assert(!has_get<Example::value_variant_ref>, "u.get<Alt>() must not be generated");
 static_assert(noserde::Buffer<Example, 3>::kRecordsPerPage == 3);
 static_assert(noserde::Buffer<Example, 3>::kPageSizeBytes == 3 * Example::noserde_size_bytes);
 static_assert(noserde::has_record_data_traits_v<Example>);

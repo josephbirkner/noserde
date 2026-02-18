@@ -11,7 +11,7 @@ concept has_get = requires(U& u) {
   u.template get<Pair>();
 };
 
-static_assert(!has_get<Node::payload_union_ref>, "u.get<Alt>() must not be generated");
+static_assert(!has_get<Node::payload_variant_ref>, "u.get<Alt>() must not be generated");
 static_assert(noserde::has_record_data_traits_v<Node>);
 static_assert(noserde::has_record_data_traits_v<Envelope>);
 

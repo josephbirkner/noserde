@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <noserde.hpp>
 
 enum class Kind : std::uint8_t {
   Int = 0,
@@ -10,11 +11,7 @@ enum class Kind : std::uint8_t {
 [[noserde]] struct Example {
   bool flag;
   std::int32_t id;
-
-  union Value {
-    std::int32_t as_int;
-    double as_real;
-  } value;
+  noserde::variant<std::int32_t, double> value;
 
   Kind kind;
 };

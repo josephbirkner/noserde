@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <noserde.hpp>
 
 enum class Mode : std::uint8_t {
   Pair = 0,
@@ -17,24 +18,14 @@ enum class Mode : std::uint8_t {
 
 [[noserde]] struct Node {
   bool valid;
-
-  union Payload {
-    Pair as_pair;
-    std::uint64_t as_u64;
-    float as_f32;
-  } payload;
+  noserde::variant<Pair, std::uint64_t, float> payload;
 
   Mode mode;
 };
 
 [[noserde]] struct Envelope {
   Node node;
-
-  union Choice {
-    Pair as_pair;
-    Node as_node;
-    std::int32_t as_i32;
-  } choice;
+  noserde::variant<Pair, Node, std::int32_t> choice;
 
   std::uint16_t tail;
 };

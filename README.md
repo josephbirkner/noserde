@@ -18,8 +18,9 @@ Inside `[[noserde]] struct ...` blocks:
 - `float`, `double`
 - enums
 - nested tagged structs
-- unions
-- named nested structs (`struct Name { ... } field;`) inside tagged structs/unions
+- `noserde::variant<T...>` (tagged/discriminated)
+- `noserde::union_<T...>` (untagged overlay)
+- named nested structs (`struct Name { ... } field;`)
 
 Out of scope:
 
@@ -27,11 +28,12 @@ Out of scope:
 - pointers/references
 - bitfields
 - inheritance/templates/method bodies in generated structs
-- anonymous unions (`union { ... } field;`)
+- C++ `union` declarations (use `noserde::variant` or `noserde::union_`)
 
 ## Workflow
 
 1. Author a source header (for example `my_schema.h`) with `[[noserde]]` structs.
+   If you use `noserde::variant<T...>` / `noserde::union_<T...>` field types, include `<noserde.hpp>` in that schema header.
 2. Tag target structs with `[[noserde]]`.
 3. Add that header to a target's source list and link that target with `noserde_runtime` (or `noserde::runtime`).
 4. Build the target. The generator creates mirrored headers under `build/noserde_generated/`.
@@ -78,7 +80,8 @@ If digest is unchanged, writes are skipped.
 - field proxy types
 - `noserde::Buffer<T>`
 - generated `T::Data` and `noserde::record_data_traits<T>`
-- union proxy API (`index`, `holds_alternative<T>()`, `get_if<T>()`, `emplace<T>(...)`, `visit`)
+- `noserde::variant<T...>` proxy API (`index`, `holds_alternative<T>()`, `get_if<T>()`, `emplace<T>(...)`, `visit`)
+- `noserde::union_<T...>` proxy API (`as<T>()`, `emplace<T>(...)`)
 - `Buffer::emplace(...)` (construct from `T::Data`-shape arguments)
 - binary I/O (`write_binary`, `read_binary`)
 - bitsery integration for `noserde::Buffer<T>` via standard `bitsery::quickSerialization` / `bitsery::quickDeserialization`
@@ -93,18 +96,17 @@ For contiguous `std::vector<uint8_t>` storage, use:
 using FlatBuffer = noserde::Buffer<MyRecord, 256, noserde::vector_byte_storage>;
 ```
 
-Named unions expose a nested type scope for inline alternatives, e.g. `MyStruct::MyUnion::MyNestedStruct`.
-
 `u.get<T>()` is intentionally not generated.
 
 ## Flashy Usage Examples
 
-### 1) Define a schema with nested named struct + union alternatives
+### 1) Define a schema with explicit `variant` + `union_` fields
 
 ```cpp
 // schemas/telemetry.h
 #pragma once
 #include <cstdint>
+#include <noserde.hpp>
 
 enum class Channel : std::uint8_t {
   Temperature = 0,
@@ -116,18 +118,16 @@ enum class Channel : std::uint8_t {
   bool critical;
 };
 
+[[noserde]] struct TelemetryPacked {
+  std::uint32_t hi;
+  std::uint32_t lo;
+};
+
 [[noserde]] struct TelemetryFrame {
   std::uint64_t ts_ns;
   TelemetryHeader header;
-
-  union Payload {
-    float as_f32;
-    std::int32_t as_i32;
-    struct Packed {
-      std::uint32_t hi;
-      std::uint32_t lo;
-    } packed;
-  } payload;
+  noserde::variant<std::int32_t, float, TelemetryPacked> payload;
+  noserde::union_<std::uint32_t, float> scratch;
 
   Channel channel;
 };
@@ -145,7 +145,7 @@ target_link_libraries(telemetry_app PRIVATE noserde_runtime)
 
 Linking `noserde_runtime` + listing the schema header in target sources is enough.
 
-### 3) Hot-path record writes and type-based union access
+### 3) Hot-path record writes and type-based sum-type access
 
 ```cpp
 #include <noserde.hpp>
@@ -157,10 +157,11 @@ auto f = frames.emplace(
     1717171717000000000ULL,
     TelemetryHeader::Data{42, true},
     TelemetryFrame::payload_data{std::int32_t{17}},
+    TelemetryFrame::scratch_data{std::uint32_t{0}},
     Channel::Temperature);
 
-f.payload.emplace<TelemetryFrame::Payload::Packed>();
-if (auto* packed = f.payload.get_if<TelemetryFrame::Payload::Packed>()) {
+f.payload.emplace<TelemetryPacked>();
+if (auto* packed = f.payload.get_if<TelemetryPacked>()) {
   packed->hi = 0xDEADBEEFU;
   packed->lo = 0x01234567U;
 }
@@ -170,6 +171,12 @@ if (f.payload.holds_alternative<float>()) {
   const float c = static_cast<float>(*f.payload.get_if<float>());
   (void)c;
 }
+
+f.scratch.emplace<std::uint32_t>(0x3F800000U);
+const auto scratch_f = f.scratch.as<float>();
+const auto scratch_u = f.scratch.as<std::uint32_t>();
+(void)scratch_f;
+(void)scratch_u;
 ```
 
 You can also pass a full data object:
@@ -178,7 +185,8 @@ You can also pass a full data object:
 TelemetryFrame::Data seed{};
 seed.ts_ns = 1717171718000000000ULL;
 seed.header = TelemetryHeader::Data{7, false};
-seed.payload = TelemetryFrame::Payload::Packed::Data{0x11111111U, 0x22222222U};
+seed.payload = TelemetryPacked::Data{0x11111111U, 0x22222222U};
+seed.scratch = std::uint32_t{0x40400000U};
 seed.channel = Channel::Pressure;
 frames.emplace(seed);
 ```
@@ -251,7 +259,7 @@ Buffer bytes are always canonical little-endian.
 - little-endian hosts: no conversion overhead in hot path
 - big-endian hosts: conversion at load/store boundaries
 
-This applies to ints, floats, enums, and union tag values.
+This applies to ints, floats, enums, and variant tag values.
 
 ## Build and Test
 
