@@ -504,9 +504,17 @@ struct is_vector_storage_policy : std::false_type {};
 template <>
 struct is_vector_storage_policy<vector_byte_storage> : std::true_type {};
 
+#if defined(NOSERDE_DEFAULT_VECTOR_STORAGE) && NOSERDE_DEFAULT_VECTOR_STORAGE
+template <typename TValue, std::size_t T_PageBytes>
+using default_byte_storage = vector_byte_storage<TValue, T_PageBytes>;
+#else
+template <typename TValue, std::size_t T_PageBytes>
+using default_byte_storage = segmented_byte_storage<TValue, T_PageBytes>;
+#endif
+
 template <typename T,
           std::size_t T_RecordsPerPage = 256,
-          template <typename, std::size_t> typename T_ByteStoragePolicy = segmented_byte_storage,
+          template <typename, std::size_t> typename T_ByteStoragePolicy = default_byte_storage,
           typename Enable = void>
 class Buffer;
 

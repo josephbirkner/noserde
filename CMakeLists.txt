@@ -7,6 +7,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(CTest)
 option(NOSERDE_WITH_GLM "Fetch optional GLM headers and enable native POD integration tests" ON)
+option(NOSERDE_DEFAULT_VECTOR_STORAGE "Default noserde::Buffer storage policy to vector_byte_storage" OFF)
 include(cmake/deps.cmake)
 
 option(NOSERDE_BUILD_BENCHMARKS "Build noserde benchmarks" ON)
@@ -237,6 +238,10 @@ endfunction()
 
 add_library(noserde_runtime INTERFACE)
 add_library(noserde::runtime ALIAS noserde_runtime)
+target_compile_definitions(noserde_runtime
+  INTERFACE
+    $<$<BOOL:${NOSERDE_DEFAULT_VECTOR_STORAGE}>:NOSERDE_DEFAULT_VECTOR_STORAGE=1>
+)
 target_include_directories(noserde_runtime
   INTERFACE
     ${NOSERDE_DEP_INCLUDE_DIRS}
