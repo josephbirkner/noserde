@@ -136,22 +136,8 @@ constexpr std::uint64_t fnv1a64(std::string_view text) {
 }
 
 template <typename T>
-consteval std::string_view native_type_signature() {
-#if defined(__clang__) || defined(__GNUC__)
-  return __PRETTY_FUNCTION__;
-#elif defined(_MSC_VER)
-  return __FUNCSIG__;
-#else
-  return "noserde::detail::native_type_signature";
-#endif
-}
-
-template <typename T>
 consteval std::uint64_t native_type_schema_hash() {
-  std::uint64_t hash = fnv1a64(native_type_signature<T>());
-  hash ^= static_cast<std::uint64_t>(sizeof(std::remove_cv_t<T>));
-  hash *= 1099511628211ULL;
-  return hash;
+  return sizeof(T);
 }
 
 template <typename TValue, std::size_t T_PageBytes>
